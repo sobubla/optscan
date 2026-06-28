@@ -167,6 +167,59 @@ def init_db():
 
         CREATE INDEX IF NOT EXISTS idx_optscan_sym_dir_take
             ON optscan_signals(sym, dir, take);
+
+        -- Entry suggestions: every strike-selector output for a gate take.
+        -- status: pending | approved | rejected
+        -- Never drop rows — future meta-label training data.
+        CREATE TABLE IF NOT EXISTS entry_suggestions (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            optscan_id     INTEGER,
+            sym            TEXT    NOT NULL,
+            expiry         TEXT    NOT NULL,
+            strike         INTEGER NOT NULL,
+            option_type    TEXT    NOT NULL,
+            action         TEXT    NOT NULL DEFAULT 'BUY',
+            entry_premium  REAL    NOT NULL,
+            lots           INTEGER NOT NULL,
+            stop_premium   REAL    NOT NULL,
+            target_premium REAL    NOT NULL,
+            time_stop      TEXT    NOT NULL,
+            delta          REAL    NOT NULL,
+            iv             REAL    NOT NULL,
+            regime         TEXT    NOT NULL,
+            mode           TEXT    NOT NULL DEFAULT 'intraday',
+            rationale      TEXT    NOT NULL,
+            optionlab_json TEXT,
+            status         TEXT    NOT NULL DEFAULT 'pending',
+            created_at     TEXT    DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (optscan_id) REFERENCES optscan_signals(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_entry_suggestions_status
+            ON entry_suggestions(status);
+
+        -- Exit suggestions: every ExitSignal emitted by the exit monitor.
+        -- status: pending | approved | rejected
+        -- Never drop rows — future meta-label training data (trigger + outcome).
+        CREATE TABLE IF NOT EXISTS exit_suggestions (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_suggestion_id INTEGER,        -- FK → entry_suggestions.id (NULL if unknown)
+            position_id         TEXT    NOT NULL,
+            sym                 TEXT    NOT NULL,
+            strike              INTEGER NOT NULL,
+            option_type         TEXT    NOT NULL,
+            entry_premium       REAL    NOT NULL,
+            current_premium     REAL    NOT NULL,
+            pnl_pct             REAL    NOT NULL,
+            trigger             TEXT    NOT NULL,   -- see exit_monitor.ExitSignal.trigger
+            reason              TEXT    NOT NULL,
+            mode                TEXT    NOT NULL DEFAULT 'intraday',
+            status              TEXT    NOT NULL DEFAULT 'pending',
+            created_at          TEXT    DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_exit_suggestions_status
+            ON exit_suggestions(status);
+        CREATE INDEX IF NOT EXISTS idx_exit_suggestions_position
+            ON exit_suggestions(position_id);
         """)
         conn.commit()
         logger.info(f"Journal DB ready at {DB_PATH}")
@@ -592,6 +645,167 @@ def get_last_taken(sym: str, direction: str) -> Optional[dict]:
             ORDER BY bar_time DESC
             LIMIT 1
         """, (sym, direction)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+# ============================================================================
+# ENTRY SUGGESTION LOGGING (strike-selector output)
+# ============================================================================
+
+def log_entry_suggestion(suggestion: dict, optscan_id: Optional[int] = None) -> int:
+    """
+    Persist one entry suggestion from the strike selector.
+    `suggestion` is the result of dataclasses.asdict(EntrySuggestion).
+    `optscan_id` links back to the optscan_signals row that triggered this take.
+    Returns the new row id.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.execute("""
+            INSERT INTO entry_suggestions (
+                optscan_id, sym, expiry, strike, option_type, action,
+                entry_premium, lots, stop_premium, target_premium, time_stop,
+                delta, iv, regime, mode, rationale, optionlab_json, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+        """, (
+            optscan_id,
+            suggestion["sym"],
+            suggestion["expiry"],
+            suggestion["strike"],
+            suggestion["option_type"],
+            suggestion.get("action", "BUY"),
+            suggestion["entry_premium"],
+            suggestion["lots"],
+            suggestion["stop_premium"],
+            suggestion["target_premium"],
+            suggestion["time_stop"],
+            suggestion["delta"],
+            suggestion["iv"],
+            suggestion["regime"],
+            suggestion.get("mode", "intraday"),
+            suggestion["rationale"],
+            json.dumps(suggestion["optionlab"]) if suggestion.get("optionlab") else None,
+        ))
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_pending_suggestions() -> List[Dict]:
+    """Return all pending entry suggestions, newest first."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT * FROM entry_suggestions
+            WHERE status = 'pending'
+            ORDER BY created_at DESC
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def reject_suggestion(suggestion_id: int) -> bool:
+    """Mark a pending suggestion as rejected. Returns True if the row was found."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE entry_suggestions SET status = 'rejected' WHERE id = ?",
+            (suggestion_id,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+# ============================================================================
+# EXIT SUGGESTION LOGGING (exit monitor output)
+# ============================================================================
+
+def log_exit_suggestion(signal: dict, entry_suggestion_id: Optional[int] = None) -> int:
+    """
+    Persist one ExitSignal from the exit monitor.
+    `signal` is the result of dataclasses.asdict(ExitSignal).
+    `entry_suggestion_id` links back to the entry_suggestions row for this position.
+    Returns the new row id.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.execute("""
+            INSERT INTO exit_suggestions (
+                entry_suggestion_id, position_id, sym, strike, option_type,
+                entry_premium, current_premium, pnl_pct,
+                trigger, reason, mode, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+        """, (
+            entry_suggestion_id,
+            signal["position_id"],
+            signal.get("sym", ""),
+            signal.get("strike", 0),
+            signal.get("option_type", ""),
+            signal["entry_premium"],
+            signal["current_premium"],
+            signal["pnl_pct"],
+            signal["trigger"],
+            signal["reason"],
+            signal.get("mode", "intraday"),
+        ))
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_pending_exit_suggestions() -> List[Dict]:
+    """Return all pending exit suggestions, newest first."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT * FROM exit_suggestions
+            WHERE status = 'pending'
+            ORDER BY created_at DESC
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def reject_exit_suggestion(suggestion_id: int) -> bool:
+    """Mark a pending exit suggestion as rejected. Returns True if the row was found."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE exit_suggestions SET status = 'rejected' WHERE id = ?",
+            (suggestion_id,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def approve_entry_suggestion(suggestion_id: int) -> Optional[Dict]:
+    """
+    Flip an entry suggestion from pending → approved.
+    Returns the full row dict so server.py can build an OpenPosition from it.
+    Returns None if not found or already actioned (idempotent guard).
+    """
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE entry_suggestions SET status = 'approved' WHERE id = ? AND status = 'pending'",
+            (suggestion_id,),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT * FROM entry_suggestions WHERE id = ?", (suggestion_id,)
+        ).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()

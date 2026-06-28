@@ -20,6 +20,13 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from vollib.black.implied_volatility import implied_volatility as _bv_iv
+from vollib.black.greeks.analytical import delta as _bv_delta
+from vollib.black.greeks.analytical import gamma as _bv_gamma
+from vollib.black.greeks.analytical import theta as _bv_theta
+from vollib.black.greeks.analytical import vega  as _bv_vega
+from vollib.helpers.exceptions import PriceIsAboveMaximum, PriceIsBelowIntrinsic
+
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -29,96 +36,51 @@ IV_HISTORY_PATH = Path(__file__).parent.parent / "data" / "iv_history.json"
 
 
 # ============================================================
-# BLACK-SCHOLES IV SOLVER
+# BLACK-76 IV SOLVER (via vollib / LetsBeRational)
 # ============================================================
-def _norm_cdf(x: float) -> float:
-    """Standard normal CDF via erf — no scipy dependency."""
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-
-
-def _norm_pdf(x: float) -> float:
-    """Standard normal PDF."""
-    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
-
-
-def _bs_price(S: float, K: float, T: float, r: float, sigma: float, is_call: bool) -> float:
-    """Black-Scholes theoretical price."""
-    if T <= 0 or sigma <= 0:
-        return max(S - K, 0) if is_call else max(K - S, 0)
-    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * math.sqrt(T))
-    d2 = d1 - sigma * math.sqrt(T)
-    if is_call:
-        return S * _norm_cdf(d1) - K * math.exp(-r * T) * _norm_cdf(d2)
-    return K * math.exp(-r * T) * _norm_cdf(-d2) - S * _norm_cdf(-d1)
-
-
-def _bs_vega(S: float, K: float, T: float, r: float, sigma: float) -> float:
-    """Black-Scholes vega (∂price/∂sigma). Same for calls and puts."""
-    if T <= 0 or sigma <= 0:
-        return 0.0
-    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * math.sqrt(T))
-    return S * _norm_pdf(d1) * math.sqrt(T)
-
+# vollib argument order:
+#   implied_volatility(price, F, K, r, t, flag)  — r before t
+#   greeks(flag, F, K, t, r, sigma)              — t before r
+# vollib theta is already per calendar day (divides by 365 internally).
+# vollib vega is already per 1% IV change (multiplies by 0.01 internally).
+# Forward price: F = spot * exp(r * T). Fyers does not expose futures price.
 
 def compute_iv(price: float, spot: float, strike: float, days_to_expiry: float,
                is_call: bool, risk_free_rate: float = 0.065) -> float:
     """
-    Implied volatility via Newton-Raphson.
+    Black-76 implied volatility via LetsBeRational.
     Returns annualized IV as decimal (0.18 = 18%). Returns 0.0 if not solvable.
     """
     if price <= 0 or spot <= 0 or strike <= 0 or days_to_expiry <= 0:
         return 0.0
-
     T = days_to_expiry / 365.0
-    intrinsic = max(spot - strike, 0) if is_call else max(strike - spot, 0)
-    if price < intrinsic:
-        return 0.0  # below intrinsic = arbitrage / stale price
-
-    sigma = 0.30  # initial guess: 30% IV
-    for _ in range(50):
-        bs_price = _bs_price(spot, strike, T, risk_free_rate, sigma, is_call)
-        vega = _bs_vega(spot, strike, T, risk_free_rate, sigma)
-        if vega < 1e-8:
-            return 0.0
-        diff = bs_price - price
-        if abs(diff) < 0.01:  # tolerance: 1 paisa
-            return max(min(sigma, 5.0), 0.0)  # clamp to reasonable range
-        sigma = sigma - diff / vega
-        if sigma <= 0 or sigma > 5.0:
-            return 0.0  # diverged
-    return 0.0  # didn't converge in 50 iters
+    F = spot * math.exp(risk_free_rate * T)
+    flag = 'c' if is_call else 'p'
+    try:
+        sigma = _bv_iv(price, F, strike, risk_free_rate, T, flag)
+        return sigma if 0.0 < sigma <= 5.0 else 0.0
+    except (PriceIsAboveMaximum, PriceIsBelowIntrinsic, Exception):
+        return 0.0
 
 
 def compute_greeks(spot: float, strike: float, days_to_expiry: float, sigma: float,
                    is_call: bool, risk_free_rate: float = 0.065) -> Dict:
-    """Compute delta, gamma, theta, vega from Black-Scholes."""
+    """Compute delta, gamma, theta (per calendar day), vega (per 1% IV) via Black-76."""
     if sigma <= 0 or days_to_expiry <= 0 or spot <= 0 or strike <= 0:
         return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
-
     T = days_to_expiry / 365.0
     r = risk_free_rate
-    d1 = (math.log(spot / strike) + (r + 0.5 * sigma * sigma) * T) / (sigma * math.sqrt(T))
-    d2 = d1 - sigma * math.sqrt(T)
-    pdf_d1 = _norm_pdf(d1)
-
-    if is_call:
-        delta = _norm_cdf(d1)
-        theta = (-spot * pdf_d1 * sigma / (2 * math.sqrt(T))
-                 - r * strike * math.exp(-r * T) * _norm_cdf(d2)) / 365.0
-    else:
-        delta = _norm_cdf(d1) - 1
-        theta = (-spot * pdf_d1 * sigma / (2 * math.sqrt(T))
-                 + r * strike * math.exp(-r * T) * _norm_cdf(-d2)) / 365.0
-
-    gamma = pdf_d1 / (spot * sigma * math.sqrt(T))
-    vega = spot * pdf_d1 * math.sqrt(T) / 100.0  # per 1% IV change
-
-    return {
-        "delta": round(delta, 4),
-        "gamma": round(gamma, 6),
-        "theta": round(theta, 4),
-        "vega": round(vega, 4),
-    }
+    F = spot * math.exp(r * T)
+    flag = 'c' if is_call else 'p'
+    try:
+        return {
+            "delta": round(_bv_delta(flag, F, strike, T, r, sigma), 4),
+            "gamma": round(_bv_gamma(flag, F, strike, T, r, sigma), 6),
+            "theta": round(_bv_theta(flag, F, strike, T, r, sigma), 4),
+            "vega":  round(_bv_vega (flag, F, strike, T, r, sigma), 4),
+        }
+    except Exception:
+        return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
 
 
 def days_to_nearest_expiry(index_key: str) -> float:

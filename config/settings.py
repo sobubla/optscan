@@ -4,6 +4,8 @@ All thresholds here are starting points based on Indian index option behavior;
 expect to tune them over 2-3 weeks of paper trading.
 """
 
+import os
+
 # =========================================================================
 # FYERS API CREDENTIALS - fill these in from https://myapi.fyers.in
 # =========================================================================
@@ -61,6 +63,16 @@ NO_PROGRESS_THRESHOLD_PCT = 5        # "progress" means at least +5% at some poi
 IV_DROP_EXIT_PCT = 5.0               # if IV drops this much while holding, exit
 
 # =========================================================================
+# OPENALGO API CLIENT
+# Set OPENALGO_BASE_URL and OPENALGO_API_KEY in your .env file.
+# Load the .env file before starting the server (e.g. `export $(cat .env)` or
+# call `python-dotenv` from your startup script).  These values are never
+# printed or logged by the client.
+# =========================================================================
+OPENALGO_BASE_URL = os.environ.get("OPENALGO_BASE_URL", "")
+OPENALGO_API_KEY  = os.environ.get("OPENALGO_API_KEY", "")
+
+# =========================================================================
 # WEBHOOK / SERVER
 # =========================================================================
 SERVER_HOST = "0.0.0.0"
@@ -79,6 +91,30 @@ MAX_CAPITAL_PER_TRADE_RUPEES = 15000
 # =========================================================================
 GATE_MIN_FILTERS = 9                 # minimum confluence filters to consider a signal
 GATE_COOLDOWN_BARS = 10              # bars between taken trades in same sym+dir
-GATE_ADX_THRESHOLD = 35              # adx >= this → trending; below → ranging
+GATE_REGIME_PROVIDER = "adx"         # "adx" | "gex" — which RegimeProvider to use
+GATE_ADX_THRESHOLD = 35              # adx >= this → trending; below → ranging (ADX mode)
 GATE_REQUIRE_FVG = False             # require fvg_ok from Pine refinement
 GATE_REQUIRE_PULLBACK = False        # require pb_ok from Pine refinement
+
+# =========================================================================
+# ENTRY LAYER — strike and premium selection
+# =========================================================================
+ENTRY_MODE                 = "intraday"  # "intraday" | "positional" (positional not yet enabled)
+ENTRY_DELTA_BAND_MIN       = 0.35        # abs(delta) lower bound for directional buy
+ENTRY_DELTA_BAND_MAX       = 0.50        # abs(delta) upper bound
+ENTRY_MIN_DTE              = 2           # roll to next expiry if DTE < this
+ENTRY_MIN_OI               = 50_000      # minimum open interest per strike-side
+ENTRY_MAX_SPREAD_PCT       = 5.0         # max spread as % of mid (field optional in chain)
+ENTRY_IV_PERCENTILE_REJECT = 70          # skip strike if IV percentile > this
+ENTRY_RISK_PCT             = 0.02        # fraction of equity at risk per trade
+ENTRY_STOP_PCT             = 0.30        # advisory stop: exit if premium drops this %
+ENTRY_TARGET_PCT           = 0.50        # advisory target: exit at this % premium gain
+ENTRY_EOD_SQUAREOFF        = "15:15"     # advisory intraday time stop (IST, HH:MM)
+EQUITY_RUPEES              = 200_000     # total trading equity for position sizing
+
+# =========================================================================
+# EXIT MONITOR — OR-triggered position monitor
+# =========================================================================
+EXIT_TRAIL_PCT           = 0.20   # trail fires if premium drops this % from peak (once peak >= target)
+EXIT_IV_CRUSH_DELTA      = 0.05   # IV drop in absolute decimal (0.05 = 5pp, e.g. 0.20→0.15)
+EXIT_HOLD_MINUTES_EXPIRY = 30     # tighter theta/time-stop on expiry day (normal: MAX_HOLD_MINUTES=45)

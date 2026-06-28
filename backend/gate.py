@@ -37,19 +37,61 @@ class Decision:
 
 
 class RegimeProvider(ABC):
-    """Pluggable regime signal. Swap ADX proxy for net-GEX sign later."""
+    """Pluggable regime signal. Swap ADX proxy for net-GEX sign with no gate changes."""
 
     @abstractmethod
     def get_regime(self, payload: OptScanPayload) -> str:
         """Return 'trending' or 'ranging'."""
 
+    def update_chain(self, chain: list, spot: float, lot_size: float = 1.0) -> None:
+        """Push fresh chain data to providers that need it. No-op by default."""
+
 
 class AdxRegimeProvider(RegimeProvider):
     def __init__(self, adx_threshold: float = 35.0):
         self.adx_threshold = adx_threshold
+        self._last_regime: str = "ranging"
 
     def get_regime(self, payload: OptScanPayload) -> str:
-        return "trending" if payload.adx >= self.adx_threshold else "ranging"
+        r = "trending" if payload.adx >= self.adx_threshold else "ranging"
+        self._last_regime = r
+        return r
+
+    @property
+    def current_regime(self) -> str:
+        """Last computed regime. 'ranging' until first get_regime() call."""
+        return self._last_regime
+
+
+class GexRegimeProvider(RegimeProvider):
+    """
+    Net dealer GEX sign as regime proxy.
+    Chain data is pushed by the scan loop via update_chain().
+    Default (no data yet): ranging — conservative, z-gate stays on.
+
+    Convention (CLAUDE.md): dealers long call gamma, short put gamma.
+    positive net GEX → dealers suppress moves → ranging
+    negative net GEX → dealers amplify  moves → trending
+    """
+
+    def __init__(self) -> None:
+        self._net_gex: float = 0.0
+
+    def update_chain(self, chain: list, spot: float, lot_size: float = 1.0) -> None:
+        from backend.gex import net_gex as _net_gex
+        self._net_gex = _net_gex(chain, spot, lot_size)
+
+    def get_regime(self, payload: OptScanPayload) -> str:
+        return "ranging" if self._net_gex >= 0.0 else "trending"
+
+    @property
+    def net_gex(self) -> float:
+        return self._net_gex
+
+    @property
+    def current_regime(self) -> str:
+        """Current regime from last chain update. 'ranging' until first update_chain()."""
+        return "ranging" if self._net_gex >= 0.0 else "trending"
 
 
 # ─────────────────────────── gate ────────────────────────────────────────────
