@@ -5,5 +5,9 @@ fyers-apiv3>=3.1.7
 python-dotenv>=1.0.1
 vollib>=1.0.11
 optionlab>=1.6.0
-# Note: 'requests' is installed automatically as a fyers-apiv3 dependency (pinned to 2.31.0).
-# Don't pin it here or pip will conflict.
+# requests is also a fyers-apiv3 transitive dep; list it explicitly because
+# openalgo_client.py imports it directly. No version pin to avoid conflicts.
+requests
+numpy>=2.0
+pandas>=2.0
+pytest>=8.0
