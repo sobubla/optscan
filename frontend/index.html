@@ -340,6 +340,22 @@
   .gate-pos-pill.bullish { border-left: 2px solid var(--green); }
   .gate-pos-pill.bearish { border-left: 2px solid var(--red); }
   .gate-pos-held { color: var(--text-dim); font-size: 10px; }
+  /* reversal conflict advisory */
+  .conflict-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .conflict-card {
+    display: flex; gap: 12px; align-items: center;
+    padding: 9px 14px;
+    border: 1px solid var(--amber); background: rgba(255,170,51,0.08);
+    font-size: 11px; animation: slideIn 0.3s ease;
+  }
+  .conflict-badge {
+    font-size: 9px; font-weight: 700; padding: 2px 7px;
+    letter-spacing: 0.07em; text-transform: uppercase;
+    border: 1px solid var(--amber); color: var(--amber); white-space: nowrap;
+  }
+  .conflict-body { display: flex; flex-direction: column; gap: 2px; }
+  .conflict-title { color: var(--text-bright); font-weight: 600; }
+  .conflict-detail { color: var(--text-dim); font-size: 10px; }
   /* exit suggestions */
   .exit-sug-row { display: flex; gap: 10px; flex-wrap: wrap; }
   .exit-sug-card {
@@ -409,6 +425,11 @@
   <div class="tray-section" id="gatePosSec" style="display:none;">
     <div class="tray-section-label">Gate Positions</div>
     <div class="gate-positions-row" id="gatePositionsRow"></div>
+  </div>
+
+  <div class="tray-section" id="conflictSec" style="display:none;">
+    <div class="tray-section-label">Reversal Conflicts</div>
+    <div class="conflict-row" id="conflictRow"></div>
   </div>
 
   <div class="tray-section" id="exitSugSec" style="display:none;">
@@ -673,18 +694,54 @@ function renderExitSuggestions(exitSigs) {
   }).join('');
 }
 
+function renderConflicts(conflicts) {
+  const sec = document.getElementById('conflictSec');
+  const row = document.getElementById('conflictRow');
+  if (!conflicts.length) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  row.innerHTML = conflicts.map(c => {
+    const arrow = c.new_dir === 'long' ? '↑ LONG' : '↓ SHORT';
+    return `<div class="conflict-card">
+      <span class="conflict-badge">⚡ REVERSAL</span>
+      <div class="conflict-body">
+        <div class="conflict-title">${c.sym} — ${arrow} signal fired while ${c.existing_option_type} is open</div>
+        <div class="conflict-detail">
+          Existing: ${c.existing_position_id} · New: ${c.new_option_type} ·
+          Regime: ${c.regime} · Filters: ${c.filters}/12 ·
+          ${fmtTime(c.signal_time)}
+        </div>
+        <div class="conflict-detail" style="color:var(--amber);">
+          Review and close the open position before approving a ${c.new_option_type} entry.
+        </div>
+      </div>
+      <button class="exit-dismiss" onclick="dismissConflict('${c.sym}')">dismiss</button>
+    </div>`;
+  }).join('');
+}
+
+async function dismissConflict(sym) {
+  try {
+    await fetch(`${API}/api/position-conflict/${sym}/dismiss`, { method: 'POST' });
+    await loadSuggestions();
+  } catch (e) { /* silently ignore */ }
+}
+
 async function loadSuggestions() {
   try {
-    const [suggs, positions, exitSigs] = await Promise.all([
+    const [suggs, positions, exitSigs, conflicts] = await Promise.all([
       fetch(`${API}/api/pending-suggestions`).then(r => r.json()),
       fetch(`${API}/api/active-positions`).then(r => r.json()),
       fetch(`${API}/api/pending-exit-suggestions`).then(r => r.json()),
+      fetch(`${API}/api/position-conflicts`).then(r => r.json()),
     ]);
     renderSuggestions(suggs);
     renderGatePositions(positions);
+    renderConflicts(conflicts);
     renderExitSuggestions(exitSigs);
     const tray = document.getElementById('suggestionTray');
-    tray.style.display = (suggs.length || positions.length || exitSigs.length) ? '' : 'none';
+    tray.style.display =
+      (suggs.length || positions.length || exitSigs.length || conflicts.length)
+        ? '' : 'none';
   } catch (e) {
     console.error('Suggestion tray:', e);
   }

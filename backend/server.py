@@ -45,6 +45,7 @@ from backend.gate import Gate, AdxRegimeProvider, GexRegimeProvider
 from backend.openalgo_client import OpenAlgoClient
 import backend.strike_selector as strike_selector
 import backend.exit_monitor as exit_monitor
+from backend.position_guard import check_position_conflicts
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,6 +81,11 @@ _openalgo: Optional[OpenAlgoClient] = (
 # Gate-layer open positions tracked by the exit monitor (keyed by position_id).
 # Populated when a human approves an entry suggestion via POST /api/suggestion/{id}/approve.
 _active_positions: Dict[str, exit_monitor.OpenPosition] = {}
+
+# Reversal conflict advisories: keyed by sym.
+# Set when an opposite-direction signal fires while a position is open.
+# Cleared automatically when the conflicting position exits, or manually via dismiss.
+_position_conflicts: Dict[str, dict] = {}
 latest_scans: Dict[str, dict] = {}
 
 # Track when we last recorded daily IV per index (one record/day)
@@ -221,6 +227,9 @@ async def scan_loop():
                                     from dataclasses import asdict
                                     log_exit_suggestion(asdict(signal))
                                     del _active_positions[pos.position_id]
+                                    # Clear any reversal advisory for this sym now that
+                                    # the position is gone — the conflict is resolved.
+                                    _position_conflicts.pop(pos.sym, None)
                                     logger.warning(
                                         "EXIT SIGNAL — %s trigger=%s pnl=%.1f%% [awaiting approval]",
                                         pos.position_id, signal.trigger, signal.pnl_pct,
@@ -319,37 +328,78 @@ async def optscan_webhook(payload: OptScanPayload):
         logger.info("SKIP — %s", decision.reason)
 
     suggestion_data = None
-    if decision.take and _openalgo:
-        try:
-            from dataclasses import asdict
-            expiry = strike_selector.next_weekly_expiry(
-                date.today(), min_dte=settings.ENTRY_MIN_DTE
+    blocked_reason = None
+    conflict_data = None
+
+    if decision.take:
+        # Position guard: check before hitting the strike selector.
+        # Signal is already logged above (training data preserved regardless).
+        guard_reason, guard_pos_id = check_position_conflicts(
+            payload.sym, payload.dir, _active_positions
+        )
+
+        if guard_reason == "position_already_open":
+            blocked_reason = "position_already_open"
+            logger.info(
+                "SUGGESTION BLOCKED — %s %s already open (pos: %s)",
+                payload.sym,
+                "CE" if payload.dir == "long" else "PE",
+                guard_pos_id,
             )
-            chain = _openalgo.get_option_greeks(payload.sym, expiry)
-            iv_hist = fyers._iv_history.get(payload.sym.upper(), [])
-            suggestion = strike_selector.evaluate(
-                sym=payload.sym,
-                direction=payload.dir,
-                regime=decision.regime,
-                spot=payload.price,
-                atr=payload.atr,
-                chain=chain,
-                iv_history=iv_hist,
-                mode=settings.ENTRY_MODE,
-                config=settings,
+
+        elif guard_reason == "opposite_position_open":
+            blocked_reason = "opposite_position_open"
+            conflict_data = {
+                "sym": payload.sym,
+                "new_dir": payload.dir,
+                "new_option_type": "CE" if payload.dir == "long" else "PE",
+                "existing_option_type": "PE" if payload.dir == "long" else "CE",
+                "existing_position_id": guard_pos_id,
+                "signal_time": datetime.now().isoformat(),
+                "regime": decision.regime,
+                "filters": payload.filters,
+            }
+            _position_conflicts[payload.sym] = conflict_data
+            logger.warning(
+                "REVERSAL SIGNAL — %s %s fired while %s open (pos: %s)",
+                payload.sym,
+                "CE" if payload.dir == "long" else "PE",
+                "PE" if payload.dir == "long" else "CE",
+                guard_pos_id,
             )
-            if suggestion:
-                suggestion_data = asdict(suggestion)
-                log_entry_suggestion(suggestion_data, optscan_id=optscan_id)
-                logger.info(
-                    "SUGGESTION — %s %s%s @%.1f lots=%d [%s]",
-                    suggestion.sym, suggestion.strike, suggestion.option_type,
-                    suggestion.entry_premium, suggestion.lots, suggestion.rationale,
+
+        elif _openalgo:
+            # No conflict and OpenAlgo is configured → generate entry suggestion.
+            try:
+                from dataclasses import asdict
+                expiry = strike_selector.next_weekly_expiry(
+                    date.today(), min_dte=settings.ENTRY_MIN_DTE
                 )
-        except Exception:
-            logger.exception(
-                "Strike selector error — gate take recorded, selector skipped"
-            )
+                chain = _openalgo.get_option_greeks(payload.sym, expiry)
+                iv_hist = fyers._iv_history.get(payload.sym.upper(), [])
+                suggestion = strike_selector.evaluate(
+                    sym=payload.sym,
+                    direction=payload.dir,
+                    regime=decision.regime,
+                    spot=payload.price,
+                    atr=payload.atr,
+                    chain=chain,
+                    iv_history=iv_hist,
+                    mode=settings.ENTRY_MODE,
+                    config=settings,
+                )
+                if suggestion:
+                    suggestion_data = asdict(suggestion)
+                    log_entry_suggestion(suggestion_data, optscan_id=optscan_id)
+                    logger.info(
+                        "SUGGESTION — %s %s%s @%.1f lots=%d [%s]",
+                        suggestion.sym, suggestion.strike, suggestion.option_type,
+                        suggestion.entry_premium, suggestion.lots, suggestion.rationale,
+                    )
+            except Exception:
+                logger.exception(
+                    "Strike selector error — gate take recorded, selector skipped"
+                )
 
     return {
         "take": decision.take,
@@ -358,6 +408,8 @@ async def optscan_webhook(payload: OptScanPayload):
         "reason": decision.reason,
         "features": decision.features,
         "suggestion": suggestion_data,
+        "blocked_reason": blocked_reason,
+        "conflict": conflict_data,
     }
 
 
@@ -426,6 +478,20 @@ async def reject_exit_suggestion_endpoint(suggestion_id: int):
     if not ok:
         raise HTTPException(404, "Exit suggestion not found")
     return {"status": "rejected"}
+
+
+@app.get("/api/position-conflicts")
+async def position_conflicts_endpoint():
+    """Return active reversal conflict advisories (opposite-direction signal while position open)."""
+    return list(_position_conflicts.values())
+
+
+@app.post("/api/position-conflict/{sym}/dismiss")
+async def dismiss_position_conflict_endpoint(sym: str):
+    """Dismiss a reversal conflict advisory for a given symbol."""
+    _position_conflicts.pop(sym.upper(), None)
+    _position_conflicts.pop(sym, None)
+    return {"status": "dismissed"}
 
 
 @app.post("/webhook/tradingview")
