@@ -255,6 +255,125 @@
     color: var(--text-dim);
   }
   .meta-item span { color: var(--text); }
+  /* ===== SUGGESTION TRAY ===== */
+  .suggestion-tray {
+    background: var(--bg-elev);
+    border-bottom: 2px solid var(--blue);
+    padding: 12px 20px 14px;
+  }
+  .tray-section { margin-bottom: 14px; }
+  .tray-section:last-child { margin-bottom: 0; }
+  .tray-section-label {
+    font-size: 10px; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.1em;
+    margin-bottom: 8px; display: flex; align-items: center; gap: 8px;
+  }
+  .tray-count {
+    background: var(--amber); color: var(--bg);
+    font-size: 9px; font-weight: 700; padding: 1px 5px;
+  }
+  .suggestions-scroll { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 2px; }
+  .suggestion-card {
+    border: 1px solid var(--line-bright); background: var(--bg-elev-2);
+    padding: 12px; min-width: 268px; flex-shrink: 0;
+    animation: slideIn 0.3s ease;
+  }
+  .suggestion-card.bullish { border-left: 3px solid var(--green); }
+  .suggestion-card.bearish { border-left: 3px solid var(--red); }
+  .sug-header {
+    display: flex; justify-content: space-between;
+    align-items: center; margin-bottom: 6px;
+  }
+  .sug-sym { font-weight: 700; color: var(--text-bright); font-size: 12px; letter-spacing: 0.02em; }
+  .sug-regime {
+    font-size: 9px; padding: 2px 6px;
+    letter-spacing: 0.05em; text-transform: uppercase; font-weight: 600;
+  }
+  .sug-regime.trending { background: rgba(77,142,255,0.15); color: var(--blue); }
+  .sug-regime.ranging  { background: rgba(255,170,51,0.12); color: var(--amber); }
+  .sug-time { font-size: 10px; color: var(--text-dim); }
+  .sug-contract {
+    font-size: 15px; font-weight: 700; color: var(--text-bright);
+    margin-bottom: 8px; display: flex; align-items: baseline; gap: 6px;
+  }
+  .sug-expiry { font-size: 10px; font-weight: 400; color: var(--text-dim); }
+  .sug-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 1px; background: var(--line); border: 1px solid var(--line);
+    margin-bottom: 8px;
+  }
+  .sug-cell { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; background: var(--bg); }
+  .sug-label { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+  .sug-value { font-size: 12px; font-weight: 600; color: var(--text); }
+  .sug-value.entry  { color: var(--amber); }
+  .sug-value.stop   { color: var(--red); }
+  .sug-value.target { color: var(--green); }
+  .sug-rationale {
+    font-size: 10px; color: var(--text-dim);
+    margin-bottom: 10px; line-height: 1.5;
+    border-left: 2px solid var(--line-bright); padding-left: 6px;
+  }
+  .sug-actions { display: flex; gap: 6px; }
+  .sug-approve {
+    flex: 1; padding: 7px 0;
+    background: rgba(0,214,143,0.10); color: var(--green);
+    border: 1px solid var(--green);
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+    cursor: pointer; letter-spacing: 0.04em; transition: background 0.15s;
+  }
+  .sug-approve:hover { background: rgba(0,214,143,0.22); }
+  .sug-reject {
+    flex: 1; padding: 7px 0;
+    background: transparent; color: var(--text-dim);
+    border: 1px solid var(--line-bright);
+    font-family: var(--mono); font-size: 11px;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .sug-reject:hover { border-color: var(--red); color: var(--red); }
+  /* gate positions */
+  .gate-positions-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .gate-pos-pill {
+    display: flex; gap: 10px; align-items: center;
+    padding: 5px 12px; border: 1px solid var(--line-bright);
+    background: var(--bg-elev-2); font-size: 11px;
+  }
+  .gate-pos-pill.bullish { border-left: 2px solid var(--green); }
+  .gate-pos-pill.bearish { border-left: 2px solid var(--red); }
+  .gate-pos-held { color: var(--text-dim); font-size: 10px; }
+  /* exit suggestions */
+  .exit-sug-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .exit-sug-card {
+    display: flex; gap: 10px; align-items: center;
+    padding: 7px 12px; border: 1px solid var(--amber);
+    background: rgba(255,170,51,0.06); font-size: 11px;
+    animation: slideIn 0.3s ease;
+  }
+  .exit-sug-card.premium_stop,
+  .exit-sug-card.iv_crush { border-color: var(--red); background: rgba(255,71,87,0.08); box-shadow: 0 0 6px rgba(255,71,87,0.2); }
+  .exit-sug-card.premium_target,
+  .exit-sug-card.premium_trail { border-color: var(--green); background: rgba(0,214,143,0.07); }
+  .exit-trigger-badge {
+    font-size: 9px; font-weight: 700; padding: 2px 6px;
+    letter-spacing: 0.06em; text-transform: uppercase; border: 1px solid currentColor;
+  }
+  .exit-trigger-badge.premium_stop, .exit-trigger-badge.iv_crush { color: var(--red); }
+  .exit-trigger-badge.premium_target, .exit-trigger-badge.premium_trail { color: var(--green); }
+  .exit-trigger-badge.time_stop, .exit-trigger-badge.eod_squareoff,
+  .exit-trigger-badge.regime_flip { color: var(--amber); }
+  .exit-dismiss {
+    padding: 3px 8px; background: transparent; color: var(--text-dim);
+    border: 1px solid var(--line-bright);
+    font-family: var(--mono); font-size: 10px; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .exit-dismiss:hover { border-color: var(--red); color: var(--red); }
+  #toast {
+    position: fixed; top: 60px; right: 20px;
+    background: var(--bg-elev-2); border: 1px solid var(--green);
+    padding: 10px 16px; font-size: 11px; color: var(--green);
+    z-index: 200; animation: slideIn 0.3s ease; max-width: 360px;
+    display: none;
+  }
 </style>
 </head>
 <body>
@@ -275,6 +394,31 @@
 </header>
 
 <div class="positions-bar" id="positionsBar"></div>
+
+<!-- Suggestion tray: hidden when empty, appears above scanner panels when signals fire -->
+<div class="suggestion-tray" id="suggestionTray" style="display:none;">
+
+  <div class="tray-section" id="pendingSugSection">
+    <div class="tray-section-label">
+      Pending Approvals
+      <span class="tray-count" id="pendingSugCount">0</span>
+    </div>
+    <div class="suggestions-scroll" id="suggestionsContainer"></div>
+  </div>
+
+  <div class="tray-section" id="gatePosSec" style="display:none;">
+    <div class="tray-section-label">Gate Positions</div>
+    <div class="gate-positions-row" id="gatePositionsRow"></div>
+  </div>
+
+  <div class="tray-section" id="exitSugSec" style="display:none;">
+    <div class="tray-section-label">Exit Signals</div>
+    <div class="exit-sug-row" id="exitSugRow"></div>
+  </div>
+
+</div>
+
+<div id="toast"></div>
 
 <main id="mainGrid">
   <div class="panel" data-index="NIFTY">
@@ -420,9 +564,168 @@ async function refresh() {
         <span class="alert-msg">${a.message}</span>
       </div>
     `).join('');
+
+    // gate-layer suggestions (has its own error handling)
+    await loadSuggestions();
   } catch (e) {
     document.getElementById('liveStatus').textContent = 'OFFLINE · check server';
   }
+}
+
+// ===== SUGGESTION TRAY =====
+const LOT_SIZES = { NIFTY: 75, BANKNIFTY: 30 };
+const TRIGGER_LABELS = {
+  premium_stop: 'SL HIT', premium_target: 'TARGET', premium_trail: 'TRAIL',
+  time_stop: 'TIME STOP', iv_crush: 'IV CRUSH',
+  regime_flip: 'REGIME FLIP', eod_squareoff: 'EOD',
+};
+
+function fmtTime(dtStr) {
+  if (!dtStr) return '--';
+  const d = new Date(dtStr.includes('T') ? dtStr : dtStr.replace(' ', 'T'));
+  return isNaN(d) ? '--' : d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+}
+
+function heldMin(isoStr) {
+  if (!isoStr) return '--';
+  const d = new Date(isoStr);
+  return isNaN(d) ? '--' : Math.floor((Date.now() - d) / 60000) + 'm';
+}
+
+function ivDisplay(iv) {
+  if (iv == null) return '--';
+  return (iv > 1 ? iv : iv * 100).toFixed(1) + '%';
+}
+
+function renderSuggestions(suggs) {
+  const section = document.getElementById('pendingSugSection');
+  const container = document.getElementById('suggestionsContainer');
+  if (!suggs.length) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  document.getElementById('pendingSugCount').textContent = suggs.length;
+  container.innerHTML = suggs.map(s => {
+    const dir = s.option_type === 'CE' ? 'bullish' : 'bearish';
+    const lotSz = LOT_SIZES[s.sym] || '?';
+    return `
+    <div class="suggestion-card ${dir}" id="sug-${s.id}">
+      <div class="sug-header">
+        <span class="sug-sym">${s.sym}</span>
+        <span class="sug-regime ${s.regime || 'ranging'}">${s.regime || '--'}</span>
+        <span class="sug-time">${fmtTime(s.created_at)}</span>
+      </div>
+      <div class="sug-contract">
+        ${s.strike}<span class="type ${s.option_type}">${s.option_type}</span>
+        <span class="sug-expiry">${s.expiry}</span>
+      </div>
+      <div class="sug-grid">
+        <div class="sug-cell"><div class="sug-label">Entry</div><div class="sug-value entry">₹${fmt(s.entry_premium)}</div></div>
+        <div class="sug-cell"><div class="sug-label">Stop</div><div class="sug-value stop">₹${fmt(s.stop_premium)}</div></div>
+        <div class="sug-cell"><div class="sug-label">Target</div><div class="sug-value target">₹${fmt(s.target_premium)}</div></div>
+        <div class="sug-cell"><div class="sug-label">Lots</div><div class="sug-value">${s.lots} × ${lotSz}</div></div>
+        <div class="sug-cell"><div class="sug-label">Delta</div><div class="sug-value">${fmt(Math.abs(s.delta || 0), 2)}</div></div>
+        <div class="sug-cell"><div class="sug-label">IV</div><div class="sug-value">${ivDisplay(s.iv)}</div></div>
+      </div>
+      <div class="sug-rationale">${s.rationale || ''}</div>
+      <div class="sug-actions">
+        <button class="sug-approve" onclick="approveSuggestion(${s.id})">✓ APPROVE</button>
+        <button class="sug-reject"  onclick="rejectSuggestion(${s.id})">✗ REJECT</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderGatePositions(positions) {
+  const sec = document.getElementById('gatePosSec');
+  const row = document.getElementById('gatePositionsRow');
+  if (!positions.length) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  row.innerHTML = positions.map(p => {
+    const dir = p.option_type === 'CE' ? 'bullish' : 'bearish';
+    const peakPct = p.entry_premium > 0
+      ? ((p.peak_premium - p.entry_premium) / p.entry_premium * 100).toFixed(1)
+      : null;
+    return `<div class="gate-pos-pill ${dir}">
+      <strong>${p.sym} ${p.strike}<span class="type ${p.option_type}" style="margin-left:3px;">${p.option_type}</span></strong>
+      <span>@ ₹${fmt(p.entry_premium)}</span>
+      ${peakPct !== null && peakPct > 0 ? `<span style="color:var(--green);">peak +${peakPct}%</span>` : ''}
+      <span class="gate-pos-held">${heldMin(p.entry_time)} held</span>
+      <span style="color:var(--text-dim);">stop ₹${fmt(p.stop_premium)}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderExitSuggestions(exitSigs) {
+  const sec = document.getElementById('exitSugSec');
+  const row = document.getElementById('exitSugRow');
+  if (!exitSigs.length) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  row.innerHTML = exitSigs.map(e => {
+    const pnlSign = e.pnl_pct >= 0 ? '+' : '';
+    const pnlColor = e.pnl_pct >= 0 ? 'var(--green)' : 'var(--red)';
+    const trigLabel = TRIGGER_LABELS[e.trigger] || e.trigger.toUpperCase();
+    return `<div class="exit-sug-card ${e.trigger}">
+      <span class="exit-trigger-badge ${e.trigger}">${trigLabel}</span>
+      <strong>${e.sym} ${e.strike}<span class="type ${e.option_type}" style="margin-left:3px;">${e.option_type}</span></strong>
+      <span style="color:${pnlColor};font-weight:600;">${pnlSign}${fmt(e.pnl_pct, 1)}%</span>
+      <span style="color:var(--text-dim);">@ ₹${fmt(e.current_premium)}</span>
+      <button class="exit-dismiss" onclick="dismissExitSuggestion(${e.id})">dismiss</button>
+    </div>`;
+  }).join('');
+}
+
+async function loadSuggestions() {
+  try {
+    const [suggs, positions, exitSigs] = await Promise.all([
+      fetch(`${API}/api/pending-suggestions`).then(r => r.json()),
+      fetch(`${API}/api/active-positions`).then(r => r.json()),
+      fetch(`${API}/api/pending-exit-suggestions`).then(r => r.json()),
+    ]);
+    renderSuggestions(suggs);
+    renderGatePositions(positions);
+    renderExitSuggestions(exitSigs);
+    const tray = document.getElementById('suggestionTray');
+    tray.style.display = (suggs.length || positions.length || exitSigs.length) ? '' : 'none';
+  } catch (e) {
+    console.error('Suggestion tray:', e);
+  }
+}
+
+async function approveSuggestion(id) {
+  const card = document.getElementById(`sug-${id}`);
+  if (card) { card.style.opacity = '0.4'; card.style.pointerEvents = 'none'; }
+  try {
+    const r = await fetch(`${API}/api/suggestion/${id}/approve`, { method: 'POST' });
+    if (!r.ok) { alert('Approve failed: ' + await r.text()); return; }
+    const data = await r.json();
+    showToast(`APPROVED — place order manually at suggested premium · ${data.position_id}`);
+    await loadSuggestions();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function rejectSuggestion(id) {
+  const card = document.getElementById(`sug-${id}`);
+  if (card) { card.style.opacity = '0.4'; card.style.pointerEvents = 'none'; }
+  try {
+    await fetch(`${API}/api/suggestion/${id}/reject`, { method: 'POST' });
+    await loadSuggestions();
+  } catch (e) { /* silently ignore */ }
+}
+
+async function dismissExitSuggestion(id) {
+  try {
+    await fetch(`${API}/api/exit-suggestion/${id}/reject`, { method: 'POST' });
+    await loadSuggestions();
+  } catch (e) { /* silently ignore */ }
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => { t.style.display = 'none'; }, 5000);
 }
 
 refresh();
