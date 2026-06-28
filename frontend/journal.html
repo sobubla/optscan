@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OPT.SCAN // Trade Journal</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0e0f;
+    --bg-elev: #11161a;
+    --bg-elev-2: #161c22;
+    --line: #1f2630;
+    --line-bright: #2a3340;
+    --text: #d8dde3;
+    --text-dim: #6b7785;
+    --text-bright: #ffffff;
+    --green: #00d68f;
+    --red: #ff4757;
+    --amber: #ffaa33;
+    --blue: #4d8eff;
+    --mono: 'JetBrains Mono', ui-monospace, monospace;
+    --display: 'Space Grotesk', sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  /* ===== HEADER ===== */
+  header {
+    border-bottom: 1px solid var(--line);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg-elev);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .brand {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 16px;
+    letter-spacing: 0.05em;
+    color: var(--text-bright);
+  }
+  .brand span { color: var(--green); }
+  nav { display: flex; gap: 24px; }
+  nav a {
+    color: var(--text-dim); text-decoration: none;
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 4px 8px;
+  }
+  nav a.active { color: var(--green); border-bottom: 1px solid var(--green); }
+  nav a:hover { color: var(--text-bright); }
+
+  /* ===== STATS RIBBON ===== */
+  .stats-ribbon {
+    background: var(--bg-elev);
+    padding: 16px 20px;
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 1px;
+    border-bottom: 1px solid var(--line);
+  }
+  .stat-cell {
+    background: var(--bg);
+    padding: 8px 12px;
+    text-align: center;
+  }
+  .stat-label {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 4px;
+  }
+  .stat-value {
+    font-size: 18px;
+    font-weight: 600;
+    font-family: var(--mono);
+  }
+  .stat-value.pos { color: var(--green); }
+  .stat-value.neg { color: var(--red); }
+  .stat-value.amber { color: var(--amber); }
+  .stat-sub {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+
+  /* ===== MAIN CONTAINER ===== */
+  .container {
+    padding: 20px;
+    max-width: 1600px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 20px;
+  }
+  .panel {
+    background: var(--bg-elev);
+    border: 1px solid var(--line);
+    padding: 16px;
+  }
+  .panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .panel-title {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--text-bright);
+    letter-spacing: 0.04em;
+  }
+
+  /* ===== CONTROLS ===== */
+  .controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  select, button, input {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--line-bright);
+    padding: 5px 10px;
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  button.primary { background: var(--green); color: var(--bg); border-color: var(--green); font-weight: 600; }
+  button.primary:hover { opacity: 0.9; }
+  button.danger { background: transparent; color: var(--red); border-color: var(--red); }
+  button:hover { border-color: var(--text); }
+
+  /* ===== TRADES TABLE ===== */
+  table.trades {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+  table.trades th {
+    text-align: left;
+    color: var(--text-dim);
+    font-weight: 500;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  table.trades td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  table.trades tr:hover { background: var(--bg-elev-2); }
+  .pnl-cell { font-weight: 600; }
+  .pnl-cell.pos { color: var(--green); }
+  .pnl-cell.neg { color: var(--red); }
+  .badge {
+    display: inline-block;
+    padding: 1px 6px;
+    font-size: 9px;
+    border-radius: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .badge.CE { background: rgba(0,214,143,0.15); color: var(--green); }
+  .badge.PE { background: rgba(255,71,87,0.15); color: var(--red); }
+  .badge.open { background: rgba(255,170,51,0.15); color: var(--amber); }
+  .badge.closed { background: var(--line-bright); color: var(--text-dim); }
+  .row-actions { display: flex; gap: 4px; }
+  .row-actions button { padding: 2px 6px; font-size: 10px; }
+
+  /* ===== BREAKDOWN PANEL ===== */
+  .breakdown-row {
+    display: grid;
+    grid-template-columns: 80px 1fr 60px 60px;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px dashed var(--line);
+    font-size: 11px;
+    align-items: center;
+  }
+  .breakdown-bar {
+    height: 6px;
+    background: var(--line-bright);
+    position: relative;
+    overflow: hidden;
+  }
+  .breakdown-bar-fill {
+    position: absolute;
+    top: 0; left: 50%;
+    height: 100%;
+  }
+  .breakdown-bar-fill.pos { background: var(--green); }
+  .breakdown-bar-fill.neg { background: var(--red); transform: translateX(-100%); }
+
+  /* ===== MODALS ===== */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+  }
+  .modal-backdrop.show { display: flex; }
+  .modal {
+    background: var(--bg-elev);
+    border: 1px solid var(--line-bright);
+    padding: 20px;
+    width: 520px;
+    max-width: 92vw;
+    max-height: 85vh;
+    overflow-y: auto;
+  }
+  .modal h3 {
+    font-family: var(--display);
+    margin-bottom: 14px;
+    color: var(--text-bright);
+  }
+  .form-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .form-row label {
+    flex-shrink: 0;
+    width: 110px;
+    color: var(--text-dim);
+    font-size: 11px;
+    align-self: center;
+  }
+  .form-row input,
+  .form-row select,
+  .form-row textarea {
+    flex: 1;
+    width: 100%;
+  }
+  .form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+  }
+  textarea { min-height: 60px; font-family: var(--mono); }
+
+  .empty {
+    text-align: center;
+    color: var(--text-dim);
+    padding: 30px;
+    border: 1px dashed var(--line);
+  }
+
+  /* ===== FAB ===== */
+  .fab {
+    position: fixed;
+    bottom: 24px; right: 24px;
+    background: var(--green);
+    color: var(--bg);
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    border: none;
+    font-size: 24px;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0,214,143,0.3);
+    z-index: 50;
+  }
+  .fab:hover { transform: scale(1.05); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">OPT<span>.</span>SCAN // <span style="color:var(--amber);">JOURNAL</span></div>
+  <nav>
+    <a href="/">Scanner</a>
+    <a href="/journal" class="active">Journal</a>
+  </nav>
+</header>
+
+<!-- Top stats ribbon -->
+<div class="stats-ribbon" id="statsRibbon">
+  <div class="stat-cell">
+    <div class="stat-label">Today P&amp;L</div>
+    <div class="stat-value" id="statTodayPnl">--</div>
+    <div class="stat-sub" id="statTodayTrades">0 trades</div>
+  </div>
+  <div class="stat-cell">
+    <div class="stat-label">30D P&amp;L</div>
+    <div class="stat-value" id="stat30dPnl">--</div>
+    <div class="stat-sub" id="stat30dTrades">0 trades</div>
+  </div>
+  <div class="stat-cell">
+    <div class="stat-label">Win Rate</div>
+    <div class="stat-value" id="statWinRate">--</div>
+    <div class="stat-sub">last 30 days</div>
+  </div>
+  <div class="stat-cell">
+    <div class="stat-label">Avg Winner</div>
+    <div class="stat-value pos" id="statAvgWin">--</div>
+  </div>
+  <div class="stat-cell">
+    <div class="stat-label">Avg Loser</div>
+    <div class="stat-value neg" id="statAvgLoss">--</div>
+  </div>
+  <div class="stat-cell">
+    <div class="stat-label">Expectancy</div>
+    <div class="stat-value" id="statExpectancy">--</div>
+    <div class="stat-sub">per trade</div>
+  </div>
+</div>
+
+<div class="container">
+  <!-- LEFT: Trades table -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">TRADES</div>
+      <div class="controls">
+        <select id="filterStatus">
+          <option value="">All</option>
+          <option value="open">Open only</option>
+          <option value="closed">Closed only</option>
+        </select>
+        <select id="filterDays">
+          <option value="7">7 days</option>
+          <option value="30" selected>30 days</option>
+          <option value="90">90 days</option>
+          <option value="365">1 year</option>
+        </select>
+        <button onclick="exportCSV()">Export CSV</button>
+      </div>
+    </div>
+    <table class="trades">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Entry</th>
+          <th>Index</th>
+          <th>Contract</th>
+          <th>Qty</th>
+          <th>Entry₹</th>
+          <th>Exit₹</th>
+          <th>P&amp;L₹</th>
+          <th>P&amp;L%</th>
+          <th>Hold</th>
+          <th>Reason</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="tradesBody">
+        <tr><td colspan="13" class="empty">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- RIGHT: Analytics breakdowns -->
+  <div>
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">BY INDEX</div>
+      </div>
+      <div id="breakdownIndex"></div>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <div class="panel-header">
+        <div class="panel-title">BY TIME OF DAY</div>
+      </div>
+      <div id="breakdownTime"></div>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <div class="panel-header">
+        <div class="panel-title">BY DAY OF WEEK</div>
+      </div>
+      <div id="breakdownDay"></div>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <div class="panel-header">
+        <div class="panel-title">BY EXIT REASON</div>
+      </div>
+      <div id="breakdownExit"></div>
+    </div>
+  </div>
+</div>
+
+<!-- FAB: New trade -->
+<button class="fab" onclick="openNewTrade()" title="Log new trade">+</button>
+
+<!-- New Trade Modal -->
+<div class="modal-backdrop" id="newTradeModal">
+  <div class="modal">
+    <h3>Log New Trade</h3>
+    <div class="form-row"><label>Index</label>
+      <select id="nt_index">
+        <option value="NIFTY">NIFTY</option>
+        <option value="BANKNIFTY" selected>BANKNIFTY</option>
+        <option value="SENSEX">SENSEX</option>
+      </select>
+    </div>
+    <div class="form-row"><label>Strike</label><input id="nt_strike" type="number" placeholder="51200"></div>
+    <div class="form-row"><label>Type</label>
+      <select id="nt_type"><option value="CE">CE</option><option value="PE">PE</option></select>
+    </div>
+    <div class="form-row"><label>Quantity</label><input id="nt_qty" type="number" value="1"></div>
+    <div class="form-row"><label>Lot size</label><input id="nt_lot" type="number" value="30"></div>
+    <div class="form-row"><label>Entry price</label><input id="nt_entry" type="number" step="0.05" placeholder="145.50"></div>
+    <div class="form-row"><label>Entry IV</label><input id="nt_iv" type="number" step="0.1" placeholder="18.5"></div>
+    <div class="form-row"><label>Entry spot</label><input id="nt_spot" type="number" step="0.1" placeholder="51200"></div>
+    <div class="form-row"><label>Entry reason</label>
+      <select id="nt_reason">
+        <option value="system_signal">System signal</option>
+        <option value="manual_discretion">Manual discretion</option>
+        <option value="news_play">News play</option>
+      </select>
+    </div>
+    <div class="form-row"><label>Signal ID</label><input id="nt_signal_id" type="number" placeholder="optional"></div>
+    <div class="form-row"><label>Notes</label><textarea id="nt_notes" placeholder="Setup, reasoning, expected target..."></textarea></div>
+    <div class="form-actions">
+      <button onclick="closeModal('newTradeModal')">Cancel</button>
+      <button class="primary" onclick="submitNewTrade()">Log Trade</button>
+    </div>
+  </div>
+</div>
+
+<!-- Close Trade Modal -->
+<div class="modal-backdrop" id="closeTradeModal">
+  <div class="modal">
+    <h3>Close Trade #<span id="ct_id"></span></h3>
+    <div id="ct_summary" style="margin-bottom:12px; color:var(--text-dim);"></div>
+    <div class="form-row"><label>Exit price</label><input id="ct_exit" type="number" step="0.05"></div>
+    <div class="form-row"><label>Exit IV</label><input id="ct_exit_iv" type="number" step="0.1"></div>
+    <div class="form-row"><label>Exit spot</label><input id="ct_exit_spot" type="number" step="0.1"></div>
+    <div class="form-row"><label>Exit reason</label>
+      <select id="ct_reason">
+        <option value="target_hit">Target hit</option>
+        <option value="hard_stop">Hard stop</option>
+        <option value="profit_lock">Profit lock triggered</option>
+        <option value="time_decay">Time decay exit</option>
+        <option value="iv_crush">IV crush</option>
+        <option value="manual_exit">Manual exit (other)</option>
+      </select>
+    </div>
+    <div class="form-row"><label>Peak gain %</label><input id="ct_max_fav" type="number" step="0.1" placeholder="optional"></div>
+    <div class="form-row"><label>Max drawdown %</label><input id="ct_max_adv" type="number" step="0.1" placeholder="optional"></div>
+    <div class="form-row"><label>Exit notes</label><textarea id="ct_notes" placeholder="What worked, what didn't, lessons..."></textarea></div>
+    <div class="form-actions">
+      <button onclick="closeModal('closeTradeModal')">Cancel</button>
+      <button class="primary" onclick="submitCloseTrade()">Close Trade</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = window.location.origin + '/api/journal';
+let currentTradeId = null;
+
+function fmt(v, decimals = 2) {
+  if (v == null || v === undefined || isNaN(v)) return '--';
+  if (typeof v === 'number') return v.toFixed(decimals);
+  return v;
+}
+function fmtRupee(v) {
+  if (v == null || isNaN(v)) return '--';
+  const sign = v < 0 ? '-' : (v > 0 ? '+' : '');
+  return sign + '₹' + Math.abs(v).toLocaleString('en-IN', {maximumFractionDigits: 0});
+}
+function pnlClass(v) {
+  if (v == null || isNaN(v)) return '';
+  return v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+}
+function fmtTime(iso) {
+  if (!iso) return '--';
+  const d = new Date(iso);
+  return d.toLocaleString('en-IN', {month:'short', day:'2-digit', hour:'2-digit', minute:'2-digit'});
+}
+function openModal(id) { document.getElementById(id).classList.add('show'); }
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+// ============ DATA LOADERS ============
+async function loadStats() {
+  try {
+    const today = await fetch(`${API}/today`).then(r => r.json());
+    document.getElementById('statTodayPnl').textContent = fmtRupee(today.pnl_today);
+    document.getElementById('statTodayPnl').className = 'stat-value ' + pnlClass(today.pnl_today);
+    document.getElementById('statTodayTrades').textContent = `${today.trades_today} trades, ${today.open_positions} open`;
+
+    const s = await fetch(`${API}/summary?days_back=30`).then(r => r.json());
+    document.getElementById('stat30dPnl').textContent = fmtRupee(s.total_pnl);
+    document.getElementById('stat30dPnl').className = 'stat-value ' + pnlClass(s.total_pnl);
+    document.getElementById('stat30dTrades').textContent = `${s.total_trades} trades`;
+    document.getElementById('statWinRate').textContent = s.total_trades > 0 ? s.win_rate + '%' : '--';
+    document.getElementById('statWinRate').className = 'stat-value ' + (s.win_rate >= 50 ? 'pos' : s.win_rate >= 40 ? 'amber' : 'neg');
+    document.getElementById('statAvgWin').textContent = fmtRupee(s.avg_winner);
+    document.getElementById('statAvgLoss').textContent = fmtRupee(s.avg_loser);
+    document.getElementById('statExpectancy').textContent = fmtRupee(s.expectancy);
+    document.getElementById('statExpectancy').className = 'stat-value ' + pnlClass(s.expectancy);
+  } catch (e) { console.error('Stats load:', e); }
+}
+
+async function loadTrades() {
+  const status = document.getElementById('filterStatus').value;
+  const days = document.getElementById('filterDays').value;
+  let url = `${API}/trades?limit=200&days_back=${days}`;
+  if (status) url += `&status=${status}`;
+  try {
+    const trades = await fetch(url).then(r => r.json());
+    const tbody = document.getElementById('tradesBody');
+    if (!trades.length) {
+      tbody.innerHTML = `<tr><td colspan="13" class="empty">No trades yet. Click + to log your first.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = trades.map(t => `
+      <tr>
+        <td>${t.id}</td>
+        <td>${fmtTime(t.entry_time)}</td>
+        <td>${t.index_name}</td>
+        <td>${t.strike} <span class="badge ${t.option_type}">${t.option_type}</span></td>
+        <td>${t.quantity}</td>
+        <td>₹${fmt(t.entry_price)}</td>
+        <td>${t.exit_price ? '₹' + fmt(t.exit_price) : '--'}</td>
+        <td class="pnl-cell ${pnlClass(t.pnl_rupees)}">${t.pnl_rupees != null ? fmtRupee(t.pnl_rupees) : '--'}</td>
+        <td class="pnl-cell ${pnlClass(t.pnl_pct)}">${t.pnl_pct != null ? (t.pnl_pct > 0 ? '+' : '') + fmt(t.pnl_pct, 1) + '%' : '--'}</td>
+        <td>${t.hold_minutes != null ? t.hold_minutes + 'm' : '--'}</td>
+        <td style="font-size:10px; color:var(--text-dim);">${t.exit_reason || '--'}</td>
+        <td><span class="badge ${t.status}">${t.status}</span></td>
+        <td class="row-actions">
+          ${t.status === 'open' ? `<button class="primary" onclick="openCloseTrade(${t.id})">Close</button>` : ''}
+          <button class="danger" onclick="deleteTrade(${t.id})">×</button>
+        </td>
+      </tr>
+    `).join('');
+  } catch (e) { console.error('Trades load:', e); }
+}
+
+async function loadBreakdown(dim, elementId) {
+  try {
+    const data = await fetch(`${API}/breakdown/${dim}?days_back=30`).then(r => r.json());
+    if (!data.length) {
+      document.getElementById(elementId).innerHTML = `<div class="empty">No data</div>`;
+      return;
+    }
+    const maxAbs = Math.max(...data.map(d => Math.abs(d.total_pnl)));
+    document.getElementById(elementId).innerHTML = data.map(d => {
+      const pct = maxAbs > 0 ? (Math.abs(d.total_pnl) / maxAbs * 50) : 0;
+      const isPos = d.total_pnl > 0;
+      return `
+      <div class="breakdown-row">
+        <div style="color:var(--text);">${d.bucket || '(none)'}</div>
+        <div class="breakdown-bar">
+          <div class="breakdown-bar-fill ${isPos ? 'pos' : 'neg'}" style="width:${pct}%; ${isPos ? 'left:50%' : 'left:' + (50-pct) + '%'};"></div>
+        </div>
+        <div class="${pnlClass(d.total_pnl)}" style="text-align:right; font-weight:600;">${fmtRupee(d.total_pnl)}</div>
+        <div style="color:var(--text-dim); text-align:right; font-size:10px;">${d.win_rate}% · ${d.trades}t</div>
+      </div>`;
+    }).join('');
+  } catch (e) { console.error(`Breakdown ${dim}:`, e); }
+}
+
+// ============ ACTIONS ============
+function openNewTrade() {
+  ['nt_strike', 'nt_entry', 'nt_iv', 'nt_spot', 'nt_signal_id', 'nt_notes'].forEach(id => document.getElementById(id).value = '');
+  openModal('newTradeModal');
+}
+
+async function submitNewTrade() {
+  const payload = {
+    index_name: document.getElementById('nt_index').value,
+    strike: parseInt(document.getElementById('nt_strike').value),
+    option_type: document.getElementById('nt_type').value,
+    quantity: parseInt(document.getElementById('nt_qty').value),
+    lot_size: parseInt(document.getElementById('nt_lot').value),
+    entry_price: parseFloat(document.getElementById('nt_entry').value),
+    entry_iv: parseFloat(document.getElementById('nt_iv').value) || null,
+    entry_spot: parseFloat(document.getElementById('nt_spot').value) || null,
+    entry_reason: document.getElementById('nt_reason').value,
+    signal_id: parseInt(document.getElementById('nt_signal_id').value) || null,
+    notes: document.getElementById('nt_notes').value,
+  };
+  if (!payload.strike || !payload.entry_price || !payload.quantity || !payload.lot_size) {
+    alert('Please fill strike, qty, lot size, and entry price');
+    return;
+  }
+  try {
+    const r = await fetch(`${API}/trade`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    if (!r.ok) throw new Error(await r.text());
+    closeModal('newTradeModal');
+    refresh();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function openCloseTrade(id) {
+  currentTradeId = id;
+  document.getElementById('ct_id').textContent = id;
+  ['ct_exit', 'ct_exit_iv', 'ct_exit_spot', 'ct_max_fav', 'ct_max_adv', 'ct_notes'].forEach(i => document.getElementById(i).value = '');
+  try {
+    const t = await fetch(`${API}/trade/${id}`).then(r => r.json());
+    document.getElementById('ct_summary').textContent = `${t.index_name} ${t.strike}${t.option_type} @ ₹${t.entry_price} (entered ${fmtTime(t.entry_time)})`;
+  } catch (e) {}
+  openModal('closeTradeModal');
+}
+
+async function submitCloseTrade() {
+  const payload = {
+    exit_price: parseFloat(document.getElementById('ct_exit').value),
+    exit_iv: parseFloat(document.getElementById('ct_exit_iv').value) || null,
+    exit_spot: parseFloat(document.getElementById('ct_exit_spot').value) || null,
+    exit_reason: document.getElementById('ct_reason').value,
+    max_favorable_pct: parseFloat(document.getElementById('ct_max_fav').value) || null,
+    max_adverse_pct: parseFloat(document.getElementById('ct_max_adv').value) || null,
+    notes: document.getElementById('ct_notes').value,
+  };
+  if (!payload.exit_price) { alert('Please enter exit price'); return; }
+  try {
+    const r = await fetch(`${API}/trade/${currentTradeId}/close`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    if (!r.ok) throw new Error(await r.text());
+    closeModal('closeTradeModal');
+    refresh();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function deleteTrade(id) {
+  if (!confirm(`Delete trade #${id}? This cannot be undone.`)) return;
+  await fetch(`${API}/trade/${id}`, {method:'DELETE'});
+  refresh();
+}
+
+function exportCSV() {
+  window.open(`${API}/export?days_back=90`, '_blank');
+}
+
+function refresh() {
+  loadStats();
+  loadTrades();
+  loadBreakdown('index_name', 'breakdownIndex');
+  loadBreakdown('time_of_day', 'breakdownTime');
+  loadBreakdown('day_of_week', 'breakdownDay');
+  loadBreakdown('exit_reason', 'breakdownExit');
+}
+
+document.getElementById('filterStatus').addEventListener('change', loadTrades);
+document.getElementById('filterDays').addEventListener('change', refresh);
+
+refresh();
+setInterval(refresh, 30000);  // auto-refresh every 30s
+</script>
+</body>
+</html>

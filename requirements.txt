@@ -1,0 +1,7 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.9.2
+fyers-apiv3>=3.1.7
+python-dotenv>=1.0.1
+# Note: 'requests' is installed automatically as a fyers-apiv3 dependency (pinned to 2.31.0).
+# Don't pin it here or pip will conflict.

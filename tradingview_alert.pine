@@ -1,0 +1,805 @@
+//@version=5
+strategy("OPT.SCAN v14 STRATEGY", overlay=true,
+     initial_capital=50000000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=10,
+     commission_type=strategy.commission.percent,
+     commission_value=0.03,
+     slippage=2,
+     max_labels_count=500,
+     calc_on_every_tick=false,
+     process_orders_on_close=true)
+
+grpTF = "Signal Timeframe"
+signalTF = input.timeframe("9", "Signal Timeframe", group=grpTF)
+
+grpBT = "Backtest Settings"
+btStart = input.time(timestamp("2025-01-01T00:00:00"), "Backtest Start", group=grpBT)
+btEnd   = input.time(timestamp("2030-01-01T00:00:00"), "Backtest End",   group=grpBT)
+inBacktestWindow = time >= btStart and time <= btEnd
+
+grpExit = "Backtest Exit Model"
+exitMode      = input.string("ATR Trail", "Exit mode", options=["ATR Trail", "Fixed R:R", "Bars Held"], group=grpExit)
+atrTrailMult  = input.float(2.0, "ATR trail multiplier", group=grpExit, step=0.5)
+trailInitStopATR = input.float(1.5, "ATR Trail: initial hard stop (x ATR)", group=grpExit, step=0.25, minval=0.25, tooltip="Catastrophic stop placed at entry the moment a trade opens, at entry ± this many ATR. It protects the trade BEFORE the trailing stop activates (the trail only arms after price moves the trail multiplier in profit). Once the trade is in profit and the trailing stop rises above this level, the trail takes over.")
+fixedStopATR  = input.float(1.5, "Fixed stop (ATR)", group=grpExit, step=0.5)
+fixedTargetATR= input.float(3.0, "Fixed target (ATR)", group=grpExit, step=0.5)
+maxBarsHeld   = input.int(15, "Max bars held (Bars Held mode)", group=grpExit, minval=1)
+
+grpEMA = "EMA"
+emaFast = input.int(9,  "EMA Fast", group=grpEMA)
+emaSlow = input.int(21, "EMA Slow", group=grpEMA)
+
+grpRSI = "RSI"
+rsiLen  = input.int(14, "RSI Length", group=grpRSI)
+rsiBull = input.int(55, "RSI Bull Threshold", group=grpRSI)
+rsiBear = input.int(45, "RSI Bear Threshold", group=grpRSI)
+
+grpVol = "Volume"
+volMult = input.float(1.5, "Volume Spike Multiplier", group=grpVol)
+volLen  = input.int(20,    "Volume Avg Length",       group=grpVol)
+
+grpVwap = "VWAP / MVWAP"
+mvwapLen = input.int(20, "MVWAP Length", group=grpVwap)
+
+grpBand = "33 EMA High/Low Band"
+bandLen = input.int(33, "Band EMA Length", group=grpBand)
+
+grpCVD = "CVD"
+cvdLowerTF = input.timeframe("1", "CVD Lower Timeframe", group=grpCVD)
+cvdResetDaily = input.bool(true, "Reset CVD daily", group=grpCVD)
+
+grpST = "SuperTrend"
+stPeriod = input.int(10,  "ATR Period", group=grpST)
+stMult   = input.float(2, "Multiplier", group=grpST)
+
+grpMACD = "MACD"
+macdFast   = input.int(8,  "MACD Fast",   group=grpMACD)
+macdSlow   = input.int(21, "MACD Slow",   group=grpMACD)
+macdSignal = input.int(5,  "MACD Signal", group=grpMACD)
+
+grpFilter = "Confluence & Cooldown"
+minFiltersInput = input.int(10, "Minimum filters required (out of 12)", group=grpFilter, minval=5, maxval=12)
+requireEmaState = input.bool(true, "Require EMA state alignment as gatekeeper", group=grpFilter)
+cooldownBars = input.int(10, "Cooldown bars between same-direction signals", group=grpFilter, minval=1)
+
+grpVolGate = "Volatility Gate"
+enableVolGate     = input.bool(true,  "Enable volatility gate", group=grpVolGate)
+bbLen             = input.int(20,    "Bollinger Bands length",  group=grpVolGate)
+bbMult            = input.float(2.0, "Bollinger Bands stdev",   group=grpVolGate, step=0.1)
+kcLen             = input.int(20,    "Keltner Channel length",  group=grpVolGate)
+kcMult            = input.float(1.5, "Keltner Channel ATR mult",group=grpVolGate, step=0.1)
+squeezeLookback   = input.int(50,    "BB Width squeeze lookback", group=grpVolGate)
+atrContractRatio  = input.float(0.7, "ATR contraction threshold", group=grpVolGate, step=0.05)
+
+grpPOC = "POC Filter"
+enablePOC    = input.bool(true,  "Enable POC proximity filter", group=grpPOC)
+pocProximity = input.float(0.25, "POC Proximity %", group=grpPOC, step=0.05, minval=0.05, maxval=1.0)
+sessionOpening = input.session("0915-1030", "NSE Opening session", group=grpPOC)
+sessionMid     = input.session("1030-1400", "NSE Mid session",     group=grpPOC)
+sessionClosing = input.session("1400-1530", "NSE Closing session", group=grpPOC)
+
+grpMSS = "MSS Filter"
+enableMSS    = input.bool(true,  "Enable MSS filter", group=grpMSS)
+pivotLeft    = input.int(2, "Pivot left bars",  group=grpMSS, minval=1, maxval=10)
+pivotRight   = input.int(2, "Pivot right bars", group=grpMSS, minval=1, maxval=10)
+
+grpADX = "ADX Trend Filter"
+enableADX    = input.bool(true,  "Enable ADX filter", group=grpADX)
+adxLen       = input.int(14, "ADX Length", group=grpADX, minval=5, maxval=50)
+adxThreshold = input.float(35.0, "ADX Threshold", group=grpADX, step=1.0, minval=10, maxval=50)
+
+grpRangeGate = "Range Expansion Gate"
+enableRangeGate  = input.bool(true,  "Enable range expansion gate", group=grpRangeGate)
+rangeLookback    = input.int(20, "Range lookback bars", group=grpRangeGate, minval=5, maxval=100)
+rangeMinRatio    = input.float(1.0, "Min ratio of bar range to average", group=grpRangeGate, step=0.1, minval=0.5, maxval=3.0)
+
+grpPB = "Pullback Entry"
+enablePullback   = input.bool(false, "Enable pullback entry logic", group=grpPB)
+skipBigCandle    = input.bool(true,  "Skip big/spike candles", group=grpPB)
+bigCandleATR     = input.float(2.0,  "Big candle range threshold (x ATR)", group=grpPB, step=0.25, minval=0.5)
+skipOpening      = input.bool(true,  "Skip opening-session entries", group=grpPB)
+openingSess      = input.session("0915-0945", "Opening session to skip", group=grpPB)
+maxExtensionATR  = input.float(2.0,  "Max distance above/below band to allow entry (x ATR)", group=grpPB, step=0.25, minval=0.0)
+pullbackLookback = input.int(15,     "Pullback lookback (bars)", group=grpPB, minval=1, maxval=40)
+pullbackTouchATR = input.float(1.0,  "Pullback must reach within (x ATR) of band", group=grpPB, step=0.25, minval=0.0)
+
+grpDir = "Trade Direction"
+tradeDir   = input.string("Both", "Allowed trade direction", options=["Both", "Long only", "Short only"], group=grpDir)
+allowLong  = tradeDir != "Short only"
+allowShort = tradeDir != "Long only"
+
+grpFVG = "Fair Value Gap (FVG)"
+enableFVG     = input.bool(true,  "Enable FVG entry logic", group=grpFVG)
+fvgRunawayATR = input.float(1.0,  "Runaway FVG min gap (x ATR)", group=grpFVG, step=0.25, minval=0.1)
+fvgZoneExpiry = input.int(20,     "FVG zone valid for N bars", group=grpFVG, minval=1, maxval=100)
+fvgTapPA      = input.bool(true,  "Require PA confirmation on FVG tap", group=grpFVG)
+fvgRunawayNearOnly     = input.bool(true,  "Runaway: only if entry is near band/VWAP", group=grpFVG, tooltip="Anti-chasing guard on the runaway path. The immediate runaway entry only qualifies if price (close) is within the distance below from the 33-band OR VWAP, so the stop stays small.")
+fvgRunawayMaxDistATR   = input.float(1.0,  "Runaway max distance from band/VWAP (x ATR)", group=grpFVG, step=0.25, minval=0.0)
+fvgRequireStructure    = input.bool(true,  "Tap: require prior HH (long) / LL (short)", group=grpFVG, tooltip="On a tapped FVG, confirm market structure first: the last swing high must be above the prior swing high for longs (higher-high), and the last swing low below the prior swing low for shorts (lower-low).")
+fvgDeepTapWhenExtended = input.bool(true,  "Tap: require deep tap into demand/supply when move is big/extended", group=grpFVG, tooltip="When the FVG was made by a large displacement (gap >= runaway size) OR price is extended beyond the band, require price to wick to the FAR edge of the gap (into the demand below / supply above) rather than just touching the near edge. Pushes the entry closer to value for a tighter stop.")
+
+grpZScore = "Z-Score Mean-Reversion Entry"
+enableZScore = input.bool(false, "Enable z-score mean-reversion entry", group=grpZScore, tooltip="Buy dips / sell rallies WITHIN the already-confirmed trend instead of chasing extended moves. A cleaner, statistical version of the pullback model. Long fires when price has pulled back BELOW its rolling mean deviation (z negative); short fires when price has rallied ABOVE it (z positive).")
+zAnchor      = input.string("VWAP", "Deviation anchor", options=["VWAP", "MVWAP", "33-Band Mid"], group=grpZScore, tooltip="Reference line that price deviation is measured against. VWAP = intraday value; MVWAP = smoothed VWAP; 33-Band Mid = midpoint of your EMA-high/low band.")
+zLen         = input.int(50, "Z-score lookback (signal-TF bars)", group=grpZScore, minval=10, maxval=200)
+zEntryThresh = input.float(1.0, "Entry threshold (enter when |z| >= this)", group=grpZScore, step=0.1, minval=0.5, maxval=3.0, tooltip="How far price must have reverted before entering. 1.0-1.5 is a typical pullback-into-value zone.")
+zMaxThresh   = input.float(3.0, "Max |z| (skip beyond this)", group=grpZScore, step=0.25, minval=1.0, maxval=5.0, tooltip="Falling-knife guard. A z this extreme usually means the trend is breaking, not a dip worth buying.")
+zRequirePA   = input.bool(true, "Require reversal price-action bar (signal-TF)", group=grpZScore, tooltip="Long needs a bullish bar closing above the prior bar high; short needs a bearish bar closing below the prior bar low. Confirms the reversion is being bought/sold before entry.")
+
+grpRefine = "Entry Refinement Combine"
+refineMode = input.string("Stacked (AND)", "How to combine enabled refinements", options=["Stacked (AND)", "Any (OR)"], group=grpRefine, tooltip="Refinements = FVG, Pullback, Z-Score. AND = every ENABLED refinement must agree (stricter, fewer entries). OR = any single ENABLED refinement can trigger (looser, more entries). If none are enabled, the raw confluence signal fires unrefined.")
+
+grpMSST = "MSS-Trap Reversal Engine"
+mssEngineMode  = input.string("Flag only", "MSS-trap engine mode", options=["Off", "Flag only", "Take trades"], group=grpMSST, tooltip="Off = disabled. Flag only = marks detected traps on the chart but takes no trades (use this first to eyeball the hit-rate). Take trades = the trap opens a reversal trade on its own, tagged 'via: mss-trap'.")
+mssEntryMode   = input.string("Immediate", "Entry timing", options=["Immediate", "Retest"], group=grpMSST, tooltip="Immediate = enter on the reclaim bar. Catches BOTH scenarios — straight runners and pullbacks — since you are already in. Retest = wait for price to return to the trap level and reject there. Better entry price, but misses traps that run straight without retesting.")
+mssReclaimBars = input.int(3, "Reclaim window (bars to close back inside)", group=grpMSST, minval=1, maxval=10, tooltip="After price wicks beyond the swing, how many bars it has to close back inside before the break is treated as a clean break (not a trap).")
+mssRequireCVD  = input.bool(true, "Require CVD divergence on the sweep", group=grpMSST, tooltip="The break must lack order-flow support: price makes a new extreme but cumulative delta does NOT (no real buying/selling behind it). This is the quant edge separating a genuine trap from a random wick. Turn off to see all sweep/reclaim traps.")
+mssRetestExpiry = input.int(15, "Retest valid for N bars (Retest mode)", group=grpMSST, minval=1, maxval=50, tooltip="In Retest mode, how long the working retest order stays live before the trap zone goes stale.")
+
+grpDisp = "Display"
+showEntries = input.bool(true, "Show entry circles (green long / red short)", group=grpDisp)
+showRepeats = input.bool(true, "Show repeat-signal small dots (already in position)", group=grpDisp)
+showSkipped = input.bool(true, "Show skipped-signal gray circles", group=grpDisp)
+showBand    = input.bool(true, "Show 33-EMA band", group=grpDisp)
+
+calcAll() =>
+    _ef = ta.ema(close, emaFast)
+    _es = ta.ema(close, emaSlow)
+    _rsi = ta.rsi(close, rsiLen)
+    _volAvg = ta.sma(volume, volLen)
+    _volSpike = volume > _volAvg * volMult
+    _vwap = ta.vwap(hlc3)
+    _mvwap = ta.sma(_vwap, mvwapLen)
+    _emaHigh = ta.ema(high, bandLen)
+    _emaLow  = ta.ema(low,  bandLen)
+    [_stLine, _stDir] = ta.supertrend(stMult, stPeriod)
+    _macdLine = ta.ema(close, macdFast) - ta.ema(close, macdSlow)
+    _macdSig  = ta.ema(_macdLine, macdSignal)
+    _macdGap     = _macdLine - _macdSig
+    _macdGapPrev = _macdGap[1]
+    _macdBull = _macdLine > _macdSig and _macdLine > 0 and _macdSig > 0 and _macdGap > _macdGapPrev
+    _macdBear = _macdLine < _macdSig and _macdLine < 0 and _macdSig < 0 and _macdGap < _macdGapPrev
+    _atr     = ta.atr(kcLen)
+    _bbBasis = ta.sma(close, bbLen)
+    _bbDev   = bbMult * ta.stdev(close, bbLen)
+    _bbUp    = _bbBasis + _bbDev
+    _bbLo    = _bbBasis - _bbDev
+    _bbWidth = (_bbUp - _bbLo) / _bbBasis * 100
+    _kcBasis = ta.ema(close, kcLen)
+    _kcUp    = _kcBasis + kcMult * _atr
+    _kcLo    = _kcBasis - kcMult * _atr
+    _bbInsideKc = _bbUp < _kcUp and _bbLo > _kcLo
+    _bbWidthLow = ta.lowest(_bbWidth, squeezeLookback)
+    _bbSqueeze  = _bbWidth <= _bbWidthLow * 1.05
+    _atrAvg = ta.sma(_atr, 20)
+    _atrContracted = _atr < _atrAvg * atrContractRatio
+    [_diPlus, _diMinus, _adxVal] = ta.dmi(adxLen, adxLen)
+    _barRange    = high - low
+    _avgBarRange = ta.sma(_barRange, rangeLookback)
+    _rangeRatio  = _avgBarRange > 0 ? _barRange / _avgBarRange : 0.0
+    // ----- Z-score of price deviation from chosen anchor (signal-TF, correct bar structure) -----
+    _zAnchorVal = zAnchor == "VWAP" ? _vwap : zAnchor == "MVWAP" ? _mvwap : (_emaHigh + _emaLow) / 2.0
+    _zDev   = close - _zAnchorVal
+    _zMean  = ta.sma(_zDev, zLen)
+    _zStd   = ta.stdev(_zDev, zLen)
+    _zScore = _zStd > 0 ? (_zDev - _zMean) / _zStd : 0.0
+    _zBullPA = close > open and close > high[1]
+    _zBearPA = close < open and close < low[1]
+    [_ef, _es, _rsi, _volSpike, _vwap, _mvwap, _emaHigh, _emaLow, _stDir, _macdBull, _macdBear, close, _bbInsideKc, _bbSqueeze, _atrContracted, _adxVal, _rangeRatio, _atr, _zScore, _zBullPA, _zBearPA]
+
+[ef, es, rsi, volSpike, vwapVal, mvwapVal, emaHigh, emaLow, stDir, macdBull, macdBear, tfClose, bbInsideKc, bbSqueeze, atrContracted, adxVal, rangeRatio, atrVal, zScore, zBullPA, zBearPA] = request.security(syminfo.tickerid, signalTF, calcAll(), lookahead=barmerge.lookahead_off)
+
+stBull = stDir < 0
+stBear = stDir > 0
+
+calcCVDDelta() =>
+    barDelta = 0.0
+    if not na(close)
+        barDelta := close > open ? volume : close < open ? -volume : 0.0
+    barDelta
+
+ltf_barDelta = request.security_lower_tf(syminfo.tickerid, cvdLowerTF, calcCVDDelta())
+
+calcSumDelta() =>
+    sum = 0.0
+    if not na(ltf_barDelta) and array.size(ltf_barDelta) > 0
+        for i = 0 to array.size(ltf_barDelta) - 1
+            v = array.get(ltf_barDelta, i)
+            if not na(v)
+                sum += v
+    sum
+
+barDeltaSum = calcSumDelta()
+var float cvd = 0.0
+isNewDay = ta.change(time("D")) != 0
+cvd := (cvdResetDaily and isNewDay) ? barDeltaSum : cvd + barDeltaSum
+cvdRising  = cvd > cvd[1] and cvd > 0
+cvdFalling = cvd < cvd[1] and cvd < 0
+
+isLowVol = bbInsideKc or bbSqueeze or atrContracted
+
+TZ_IST = "Asia/Kolkata"
+inOpen = not na(time(timeframe.period, sessionOpening, TZ_IST))
+inMid  = not na(time(timeframe.period, sessionMid,     TZ_IST))
+inClose = not na(time(timeframe.period, sessionClosing, TZ_IST))
+
+var float openVN = 0.0, var float openVD = 0.0, var float openPOC = na
+if inOpen and not inOpen[1]
+    openVN := 0.0, openVD := 0.0
+if inOpen
+    openVN += hlc3 * volume, openVD += volume
+if not inOpen and inOpen[1] and openVD > 0
+    openPOC := openVN / openVD
+
+var float midVN = 0.0, var float midVD = 0.0, var float midPOC = na
+if inMid and not inMid[1]
+    midVN := 0.0, midVD := 0.0
+if inMid
+    midVN += hlc3 * volume, midVD += volume
+if not inMid and inMid[1] and midVD > 0
+    midPOC := midVN / midVD
+
+var float closeVN = 0.0, var float closeVD = 0.0, var float closePOC = na
+if inClose and not inClose[1]
+    closeVN := 0.0, closeVD := 0.0
+if inClose
+    closeVN += hlc3 * volume, closeVD += volume
+if not inClose and inClose[1] and closeVD > 0
+    closePOC := closeVN / closeVD
+
+nearestPOCDistance() =>
+    float minDist = 999999.0
+    float nearestPOC = na
+    if not na(openPOC)
+        d = math.abs(close - openPOC) / close * 100
+        if d < minDist
+            minDist := d
+            nearestPOC := openPOC
+    if not na(midPOC)
+        d = math.abs(close - midPOC) / close * 100
+        if d < minDist
+            minDist := d
+            nearestPOC := midPOC
+    if not na(closePOC)
+        d = math.abs(close - closePOC) / close * 100
+        if d < minDist
+            minDist := d
+            nearestPOC := closePOC
+    [minDist, nearestPOC]
+
+[pocDistPct, nearestPOC] = nearestPOCDistance()
+nearPOC = not na(nearestPOC) and pocDistPct < pocProximity
+f_poc_bull = enablePOC and nearPOC and close > nearestPOC
+f_poc_bear = enablePOC and nearPOC and close < nearestPOC
+
+ph = ta.pivothigh(high, pivotLeft, pivotRight)
+pl = ta.pivotlow(low,  pivotLeft, pivotRight)
+var float lastPH = na, var float lastPL = na
+var float prevPH = na, var float prevPL = na
+var float cvdAtPH = na, var float cvdAtPL = na
+if not na(ph)
+    prevPH := lastPH
+    lastPH := ph
+    cvdAtPH := cvd[pivotRight]
+if not na(pl)
+    prevPL := lastPL
+    lastPL := pl
+    cvdAtPL := cvd[pivotRight]
+// Bullish structure = most recent swing high above the prior one; bearish = swing low below prior
+higherHigh = not na(lastPH) and not na(prevPH) and lastPH > prevPH
+lowerLow   = not na(lastPL) and not na(prevPL) and lastPL < prevPL
+var int mssState = 0
+if not na(lastPH) and close > lastPH and mssState <= 0
+    mssState := 1
+if not na(lastPL) and close < lastPL and mssState >= 0
+    mssState := -1
+f_mss_bull = enableMSS and mssState == 1
+f_mss_bear = enableMSS and mssState == -1
+
+f_emaState_bull = ef > es
+f_emaState_bear = ef < es
+f_rsi_bull = rsi > rsiBull
+f_rsi_bear = rsi < rsiBear
+f_vol = volSpike
+f_aboveVwap  = tfClose > vwapVal
+f_belowVwap  = tfClose < vwapVal
+f_aboveMvwap = tfClose > mvwapVal
+f_belowMvwap = tfClose < mvwapVal
+f_aboveBand  = tfClose > emaHigh
+f_belowBand  = tfClose < emaLow
+f_cvd_bull = cvdRising
+f_cvd_bear = cvdFalling
+f_st_bull = stBull
+f_st_bear = stBear
+f_macd_bull = macdBull
+f_macd_bear = macdBear
+f_adx_trending = enableADX and adxVal > adxThreshold
+f_adx_bull = f_adx_trending
+f_adx_bear = f_adx_trending
+
+rangeGateOk = enableRangeGate ? rangeRatio >= rangeMinRatio : true
+
+bullCount = (f_emaState_bull ? 1 : 0) + (f_rsi_bull ? 1 : 0) + (f_vol ? 1 : 0) + (f_aboveVwap ? 1 : 0) + (f_aboveMvwap ? 1 : 0) + (f_aboveBand ? 1 : 0) + (f_cvd_bull ? 1 : 0) + (f_st_bull ? 1 : 0) + (f_macd_bull ? 1 : 0) + (f_poc_bull ? 1 : 0) + (f_mss_bull ? 1 : 0) + (f_adx_bull ? 1 : 0)
+bearCount = (f_emaState_bear ? 1 : 0) + (f_rsi_bear ? 1 : 0) + (f_vol ? 1 : 0) + (f_belowVwap ? 1 : 0) + (f_belowMvwap ? 1 : 0) + (f_belowBand ? 1 : 0) + (f_cvd_bear ? 1 : 0) + (f_st_bear ? 1 : 0) + (f_macd_bear ? 1 : 0) + (f_poc_bear ? 1 : 0) + (f_mss_bear ? 1 : 0) + (f_adx_bear ? 1 : 0)
+
+bullGate = requireEmaState ? f_emaState_bull : true
+bearGate = requireEmaState ? f_emaState_bear : true
+bullCondition = bullGate and bullCount >= minFiltersInput
+bearCondition = bearGate and bearCount >= minFiltersInput
+
+isNewSignalBar = ta.change(time(signalTF)) != 0
+var int barsSinceBull = 9999
+var int barsSinceBear = 9999
+if isNewSignalBar
+    barsSinceBull += 1
+    barsSinceBear += 1
+
+volGateOk = enableVolGate ? not isLowVol : true
+bullSignal = bullCondition and barsSinceBull >= cooldownBars and isNewSignalBar and volGateOk and rangeGateOk
+bearSignal = bearCondition and barsSinceBear >= cooldownBars and isNewSignalBar and volGateOk and rangeGateOk
+if bullSignal
+    barsSinceBull := 0
+if bearSignal
+    barsSinceBear := 0
+
+// ----- Pullback entry conditions -----
+_barRange = high - low
+bigCandle = _barRange > bigCandleATR * atrVal
+inOpeningSess = not na(time(timeframe.period, openingSess, TZ_IST))
+extendedLong  = (close - emaHigh) > maxExtensionATR * atrVal
+extendedShort = (emaLow - close) > maxExtensionATR * atrVal
+var bool pulledBackLong = false
+var bool pulledBackShort = false
+pulledBackLong := false
+pulledBackShort := false
+for i = 1 to pullbackLookback
+    if low[i] <= emaHigh[i] + pullbackTouchATR * atrVal
+        pulledBackLong := true
+    if high[i] >= emaLow[i] - pullbackTouchATR * atrVal
+        pulledBackShort := true
+bullPA = close > open and close > high[1]
+bearPA = close < open and close < low[1]
+pullbackRawLong  = (not skipBigCandle or not bigCandle) and (not skipOpening or not inOpeningSess) and not extendedLong  and pulledBackLong  and bullPA
+pullbackRawShort = (not skipBigCandle or not bigCandle) and (not skipOpening or not inOpeningSess) and not extendedShort and pulledBackShort and bearPA
+
+// ----- Fair Value Gap (FVG) detection & zone tracking -----
+bullFVG = low > high[2]
+bearFVG = high < low[2]
+bullGapSize = bullFVG ? (low - high[2]) : 0.0
+bearGapSize = bearFVG ? (low[2] - high) : 0.0
+runawayBull = bullFVG and bullGapSize >= fvgRunawayATR * atrVal
+runawayBear = bearFVG and bearGapSize >= fvgRunawayATR * atrVal
+
+var float bullFvgTop = na, var float bullFvgBot = na, var int bullFvgBar = na
+if bullFVG
+    bullFvgTop := low
+    bullFvgBot := high[2]
+    bullFvgBar := bar_index
+var float bearFvgTop = na, var float bearFvgBot = na, var int bearFvgBar = na
+if bearFVG
+    bearFvgTop := low[2]
+    bearFvgBot := high
+    bearFvgBar := bar_index
+
+bullFvgValid = not na(bullFvgBar) and (bar_index - bullFvgBar) <= fvgZoneExpiry
+bearFvgValid = not na(bearFvgBar) and (bar_index - bearFvgBar) <= fvgZoneExpiry
+tappedBullFVG = bullFvgValid and low <= bullFvgTop and high >= bullFvgBot
+tappedBearFVG = bearFvgValid and high >= bearFvgBot and low <= bearFvgTop
+
+// Runaway path: enter immediately on a large gap, but only if not too far from band/VWAP (tight stop)
+fvgNearLong   = (not fvgRunawayNearOnly) or ((close - emaHigh) <= fvgRunawayMaxDistATR * atrVal) or ((close - vwapVal) <= fvgRunawayMaxDistATR * atrVal)
+fvgNearShort  = (not fvgRunawayNearOnly) or ((emaLow - close) <= fvgRunawayMaxDistATR * atrVal) or ((vwapVal - close) <= fvgRunawayMaxDistATR * atrVal)
+runawayLongOk  = runawayBull and fvgNearLong
+runawayShortOk = runawayBear and fvgNearShort
+// Tap path: structure confirmation + (when move is big/extended) a deep tap into the demand/supply zone
+fvgStructOkLong  = (not fvgRequireStructure) or higherHigh
+fvgStructOkShort = (not fvgRequireStructure) or lowerLow
+deepCtxLong   = extendedLong  or (bullGapSize >= fvgRunawayATR * atrVal)
+deepCtxShort  = extendedShort or (bearGapSize >= fvgRunawayATR * atrVal)
+deepTapOkLong  = (not fvgDeepTapWhenExtended) or (not deepCtxLong)  or (low  <= bullFvgBot)
+deepTapOkShort = (not fvgDeepTapWhenExtended) or (not deepCtxShort) or (high >= bearFvgTop)
+tapLongOk  = tappedBullFVG and (not fvgTapPA or bullPA) and (not skipBigCandle or not bigCandle) and (not skipOpening or not inOpeningSess) and fvgStructOkLong  and deepTapOkLong
+tapShortOk = tappedBearFVG and (not fvgTapPA or bearPA) and (not skipBigCandle or not bigCandle) and (not skipOpening or not inOpeningSess) and fvgStructOkShort and deepTapOkShort
+fvgLongOk  = runawayLongOk  or tapLongOk
+fvgShortOk = runawayShortOk or tapShortOk
+
+// ----- Z-score mean-reversion gate (z arrives from calcAll on the signal TF) -----
+// Uptrend pullback => price below its mean deviation => z negative => long zone
+// Downtrend rally   => price above its mean deviation => z positive => short zone
+zLongZone  = zScore <= -zEntryThresh and zScore >= -zMaxThresh
+zShortZone = zScore >=  zEntryThresh and zScore <=  zMaxThresh
+zRawLong  = zLongZone  and (not zRequirePA or zBullPA)
+zRawShort = zShortZone and (not zRequirePA or zBearPA)
+
+// ----- Combine the enabled refinements (FVG / Pullback / Z-Score) -----
+anyRefineEnabled = enableFVG or enablePullback or enableZScore
+andLong  = (not enableFVG or fvgLongOk)  and (not enablePullback or pullbackRawLong)  and (not enableZScore or zRawLong)
+andShort = (not enableFVG or fvgShortOk) and (not enablePullback or pullbackRawShort) and (not enableZScore or zRawShort)
+orLong   = (enableFVG and fvgLongOk)  or (enablePullback and pullbackRawLong)  or (enableZScore and zRawLong)
+orShort  = (enableFVG and fvgShortOk) or (enablePullback and pullbackRawShort) or (enableZScore and zRawShort)
+entryRefineLong  = not anyRefineEnabled ? true : (refineMode == "Stacked (AND)" ? andLong  : orLong)
+entryRefineShort = not anyRefineEnabled ? true : (refineMode == "Stacked (AND)" ? andShort : orShort)
+
+// ============ MSS-TRAP REVERSAL ENGINE (failed break of structure — fades the trapped move) ============
+// Bearish trap: price WICKS above the last swing high (sweep) then CLOSES back below it (failure) => SHORT.
+// Bullish trap: price WICKS below the last swing low  (sweep) then CLOSES back above it (failure) => LONG.
+// Optional CVD divergence confirms the sweep had no real order flow behind it (the reason it fails).
+isRetestMode = mssEntryMode == "Retest"
+
+// --- Bearish trap state machine (sweep above swing high -> reclaim below) ---
+var bool  bearArmed    = false
+var float bearLevel    = na
+var int   bearArmBar   = na
+var float bearSweepHi  = na
+var float bearSweepCvd = na
+if not na(lastPH) and high > lastPH and not bearArmed
+    bearArmed    := true
+    bearLevel    := lastPH
+    bearArmBar   := bar_index
+    bearSweepHi  := high
+    bearSweepCvd := cvd
+if bearArmed and high > bearSweepHi
+    bearSweepHi  := high
+    bearSweepCvd := cvd
+if bearArmed and (bar_index - bearArmBar) > mssReclaimBars
+    bearArmed := false
+bearCvdDiv = na(cvdAtPH) or (bearSweepCvd <= cvdAtPH)
+bearTrap = bearArmed and close < bearLevel and (not mssRequireCVD or bearCvdDiv)
+if bearTrap
+    bearArmed := false
+
+// --- Bullish trap state machine (sweep below swing low -> reclaim above) ---
+var bool  bullArmed    = false
+var float bullLevel    = na
+var int   bullArmBar   = na
+var float bullSweepLo  = na
+var float bullSweepCvd = na
+if not na(lastPL) and low < lastPL and not bullArmed
+    bullArmed    := true
+    bullLevel    := lastPL
+    bullArmBar   := bar_index
+    bullSweepLo  := low
+    bullSweepCvd := cvd
+if bullArmed and low < bullSweepLo
+    bullSweepLo  := low
+    bullSweepCvd := cvd
+if bullArmed and (bar_index - bullArmBar) > mssReclaimBars
+    bullArmed := false
+bullCvdDiv = na(cvdAtPL) or (bullSweepCvd >= cvdAtPL)
+bullTrap = bullArmed and close > bullLevel and (not mssRequireCVD or bullCvdDiv)
+if bullTrap
+    bullArmed := false
+
+// --- Retest arming (Retest mode only): re-test of the reclaimed level, then rejection ---
+var bool  bearRetestArmed = false
+var int   bearRetestBar   = na
+if bearTrap and isRetestMode
+    bearRetestArmed := true
+    bearRetestBar   := bar_index
+if bearRetestArmed and (bar_index - bearRetestBar) > mssRetestExpiry
+    bearRetestArmed := false
+bearRetestHit = bearRetestArmed and high >= bearLevel and close < bearLevel
+if bearRetestHit
+    bearRetestArmed := false
+
+var bool  bullRetestArmed = false
+var int   bullRetestBar   = na
+if bullTrap and isRetestMode
+    bullRetestArmed := true
+    bullRetestBar   := bar_index
+if bullRetestArmed and (bar_index - bullRetestBar) > mssRetestExpiry
+    bullRetestArmed := false
+bullRetestHit = bullRetestArmed and low <= bullLevel and close > bullLevel
+if bullRetestHit
+    bullRetestArmed := false
+
+// --- Engine triggers (bearish trap => short, bullish trap => long), with cooldown + window + direction ---
+mssShortRaw = isRetestMode ? bearRetestHit : bearTrap
+mssLongRaw  = isRetestMode ? bullRetestHit : bullTrap
+mssActive   = mssEngineMode != "Off"
+mssTakesTrades = mssEngineMode == "Take trades"
+var int barsSinceMSSLong  = 9999
+var int barsSinceMSSShort = 9999
+barsSinceMSSLong  += 1
+barsSinceMSSShort += 1
+mssLongTrig  = mssActive and mssLongRaw  and barsSinceMSSLong  >= cooldownBars
+mssShortTrig = mssActive and mssShortRaw and barsSinceMSSShort >= cooldownBars
+if mssLongTrig
+    barsSinceMSSLong  := 0
+if mssShortTrig
+    barsSinceMSSShort := 0
+mssLong  = mssLongTrig  and inBacktestWindow and allowLong
+mssShort = mssShortTrig and inBacktestWindow and allowShort
+
+// Final entry = Confluence engine  OR  MSS-trap engine (only when set to take trades)
+longViaConf  = bullSignal and inBacktestWindow and allowLong  and entryRefineLong
+shortViaConf = bearSignal and inBacktestWindow and allowShort and entryRefineShort
+longEntry  = longViaConf  or (mssTakesTrades and mssLong)
+shortEntry = shortViaConf or (mssTakesTrades and mssShort)
+
+if longEntry
+    strategy.entry("Long", strategy.long)
+if shortEntry
+    strategy.entry("Short", strategy.short)
+
+var float longStop = na
+var float longTarget = na
+var float shortStop = na
+var float shortTarget = na
+
+if exitMode == "Fixed R:R"
+    if longEntry
+        longStop := close - fixedStopATR * atrVal
+        longTarget := close + fixedTargetATR * atrVal
+    if shortEntry
+        shortStop := close + fixedStopATR * atrVal
+        shortTarget := close - fixedTargetATR * atrVal
+    strategy.exit("L-exit", "Long", stop=longStop, limit=longTarget)
+    strategy.exit("S-exit", "Short", stop=shortStop, limit=shortTarget)
+
+if exitMode == "ATR Trail"
+    if longEntry
+        longStop  := close - trailInitStopATR * atrVal
+    if shortEntry
+        shortStop := close + trailInitStopATR * atrVal
+    // stop= is the fixed catastrophic floor active from entry; the trail tightens it once in profit.
+    strategy.exit("L-trail", "Long",  stop=longStop,  trail_points=atrTrailMult * atrVal / syminfo.mintick, trail_offset=atrTrailMult * atrVal / syminfo.mintick)
+    strategy.exit("S-trail", "Short", stop=shortStop, trail_points=atrTrailMult * atrVal / syminfo.mintick, trail_offset=atrTrailMult * atrVal / syminfo.mintick)
+
+if exitMode == "Bars Held"
+    if strategy.position_size > 0 and (bar_index - strategy.opentrades.entry_bar_index(strategy.opentrades - 1)) >= maxBarsHeld
+        strategy.close("Long")
+    if strategy.position_size < 0 and (bar_index - strategy.opentrades.entry_bar_index(strategy.opentrades - 1)) >= maxBarsHeld
+        strategy.close("Short")
+
+// ============ ENTRY MARKERS (actual fills only — repeats are ignored) ============
+// With pyramiding = 0, a same-direction signal while already in a position opens nothing.
+// strategy.position_size read here is the pre-bar position, so this matches what the
+// engine actually fills: flat/short + longEntry => real long; already long => repeat (no marker).
+actualLong  = longEntry  and strategy.position_size <= 0
+actualShort = shortEntry and strategy.position_size >= 0
+
+if showEntries and actualLong
+    refTip = ""
+    if enableFVG and fvgLongOk
+        refTip := refTip + (runawayBull ? "FVG runaway gap; " : "FVG tap; ")
+    if enablePullback and pullbackRawLong
+        refTip := refTip + "pullback; "
+    if enableZScore and zRawLong
+        refTip := refTip + "z-pullback; "
+    if mssTakesTrades and mssLong
+        refTip := refTip + "MSS-trap reversal; "
+    if refTip == ""
+        refTip := "raw signal (no refinement)"
+    string tip = "LONG entry\n"
+    tip := tip + "• via:" + (longViaConf ? " confluence" : "") + (mssTakesTrades and mssLong ? " mss-trap" : "") + "\n"
+    tip := tip + "• filters: " + str.tostring(bullCount) + "/12\n"
+    tip := tip + "• refine: " + refTip + "\n"
+    tip := tip + (enableZScore ? "• z = " + str.tostring(zScore, "#.00") + "\n" : "")
+    tip := tip + (enableADX ? "• ADX = " + str.tostring(adxVal, "#.0") + "\n" : "")
+    tip := tip + "• entry ~ " + str.tostring(close, format.mintick) + "\n"
+    tip := tip + "• exit model: " + exitMode
+    label.new(bar_index, low, text="", yloc=yloc.belowbar, style=label.style_circle, color=color.new(color.lime, 0), size=size.small, tooltip=tip)
+
+if showEntries and actualShort
+    refTip = ""
+    if enableFVG and fvgShortOk
+        refTip := refTip + (runawayBear ? "FVG runaway gap; " : "FVG tap; ")
+    if enablePullback and pullbackRawShort
+        refTip := refTip + "pullback; "
+    if enableZScore and zRawShort
+        refTip := refTip + "z-pullback; "
+    if mssTakesTrades and mssShort
+        refTip := refTip + "MSS-trap reversal; "
+    if refTip == ""
+        refTip := "raw signal (no refinement)"
+    string tip = "SHORT entry\n"
+    tip := tip + "• via:" + (shortViaConf ? " confluence" : "") + (mssTakesTrades and mssShort ? " mss-trap" : "") + "\n"
+    tip := tip + "• filters: " + str.tostring(bearCount) + "/12\n"
+    tip := tip + "• refine: " + refTip + "\n"
+    tip := tip + (enableZScore ? "• z = " + str.tostring(zScore, "#.00") + "\n" : "")
+    tip := tip + (enableADX ? "• ADX = " + str.tostring(adxVal, "#.0") + "\n" : "")
+    tip := tip + "• entry ~ " + str.tostring(close, format.mintick) + "\n"
+    tip := tip + "• exit model: " + exitMode
+    label.new(bar_index, high, text="", yloc=yloc.abovebar, style=label.style_circle, color=color.new(color.red, 0), size=size.small, tooltip=tip)
+
+// ----- Repeat signals: small faded dots WITH confluence tooltip (signal re-fired while already in the position; opens nothing) -----
+// Labels now (not plotshape) so they carry the same confluence metrics on hover.
+// Repeats are cooldown-gated, so volume stays within the 500-label cap for normal windows.
+if showRepeats and longEntry and strategy.position_size > 0
+    refTip = ""
+    if enableFVG and fvgLongOk
+        refTip := refTip + (runawayBull ? "FVG runaway gap; " : "FVG tap; ")
+    if enablePullback and pullbackRawLong
+        refTip := refTip + "pullback; "
+    if enableZScore and zRawLong
+        refTip := refTip + "z-pullback; "
+    if mssTakesTrades and mssLong
+        refTip := refTip + "MSS-trap reversal; "
+    if refTip == ""
+        refTip := "raw signal (no refinement)"
+    string tip = "LONG repeat — already long, no new trade\n"
+    tip := tip + "• filters: " + str.tostring(bullCount) + "/12\n"
+    tip := tip + "• refine: " + refTip + "\n"
+    tip := tip + (enableZScore ? "• z = " + str.tostring(zScore, "#.00") + "\n" : "")
+    tip := tip + (enableADX ? "• ADX = " + str.tostring(adxVal, "#.0") + "\n" : "")
+    tip := tip + "• price ~ " + str.tostring(close, format.mintick)
+    label.new(bar_index, low, text="", yloc=yloc.belowbar, style=label.style_circle, color=color.new(color.lime, 45), size=size.tiny, tooltip=tip)
+
+if showRepeats and shortEntry and strategy.position_size < 0
+    refTip = ""
+    if enableFVG and fvgShortOk
+        refTip := refTip + (runawayBear ? "FVG runaway gap; " : "FVG tap; ")
+    if enablePullback and pullbackRawShort
+        refTip := refTip + "pullback; "
+    if enableZScore and zRawShort
+        refTip := refTip + "z-pullback; "
+    if mssTakesTrades and mssShort
+        refTip := refTip + "MSS-trap reversal; "
+    if refTip == ""
+        refTip := "raw signal (no refinement)"
+    string tip = "SHORT repeat — already short, no new trade\n"
+    tip := tip + "• filters: " + str.tostring(bearCount) + "/12\n"
+    tip := tip + "• refine: " + refTip + "\n"
+    tip := tip + (enableZScore ? "• z = " + str.tostring(zScore, "#.00") + "\n" : "")
+    tip := tip + (enableADX ? "• ADX = " + str.tostring(adxVal, "#.0") + "\n" : "")
+    tip := tip + "• price ~ " + str.tostring(close, format.mintick)
+    label.new(bar_index, high, text="", yloc=yloc.abovebar, style=label.style_circle, color=color.new(color.red, 45), size=size.tiny, tooltip=tip)
+// ----- Skipped-signal markers: gray circle labels with a hover tooltip explaining WHY -----
+// (plotshape can't carry per-bar text, so labels are used; tooltips appear on hover)
+if showSkipped and bullSignal and not longEntry
+    string tip = "BULL signal skipped — reason:\n"
+    if not inBacktestWindow
+        tip := tip + "• outside backtest window\n"
+    if not allowLong
+        tip := tip + "• direction set to Short only\n"
+    if anyRefineEnabled
+        tip := tip + "• refine mode: " + refineMode + "\n"
+        fvgMsg = not enableFVG ? "off" : fvgLongOk ? "PASS" : (not (runawayBull or tappedBullFVG) ? "no valid gap/tap" : (fvgTapPA and not bullPA ? "tap ok, no bull PA" : (skipBigCandle and bigCandle ? "tap ok, big candle" : (skipOpening and inOpeningSess ? "tap ok, opening sess" : "blocked"))))
+        pbMsg  = not enablePullback ? "off" : pullbackRawLong ? "PASS" : (skipBigCandle and bigCandle ? "big candle" : (skipOpening and inOpeningSess ? "opening sess" : (extendedLong ? "too extended above band" : (not pulledBackLong ? "no pullback to band" : (not bullPA ? "no bull PA bar" : "blocked")))))
+        zMsg   = not enableZScore ? "off" : zRawLong ? "PASS" : (not zLongZone ? "z=" + str.tostring(zScore, "#.00") + " (need -" + str.tostring(zMaxThresh, "#.0") + " to -" + str.tostring(zEntryThresh, "#.0") + ")" : (zRequirePA and not zBullPA ? "z=" + str.tostring(zScore, "#.00") + " ok, no bull PA" : "blocked"))
+        tip := tip + "• FVG: " + fvgMsg + "\n• Pullback: " + pbMsg + "\n• Z-Score: " + zMsg
+    label.new(bar_index, low, text="", yloc=yloc.belowbar, style=label.style_circle, color=color.new(color.gray, 40), size=size.tiny, tooltip=tip)
+
+if showSkipped and bearSignal and not shortEntry
+    string tip = "BEAR signal skipped — reason:\n"
+    if not inBacktestWindow
+        tip := tip + "• outside backtest window\n"
+    if not allowShort
+        tip := tip + "• direction set to Long only\n"
+    if anyRefineEnabled
+        tip := tip + "• refine mode: " + refineMode + "\n"
+        fvgMsg = not enableFVG ? "off" : fvgShortOk ? "PASS" : (not (runawayBear or tappedBearFVG) ? "no valid gap/tap" : (fvgTapPA and not bearPA ? "tap ok, no bear PA" : (skipBigCandle and bigCandle ? "tap ok, big candle" : (skipOpening and inOpeningSess ? "tap ok, opening sess" : "blocked"))))
+        pbMsg  = not enablePullback ? "off" : pullbackRawShort ? "PASS" : (skipBigCandle and bigCandle ? "big candle" : (skipOpening and inOpeningSess ? "opening sess" : (extendedShort ? "too extended below band" : (not pulledBackShort ? "no pullback to band" : (not bearPA ? "no bear PA bar" : "blocked")))))
+        zMsg   = not enableZScore ? "off" : zRawShort ? "PASS" : (not zShortZone ? "z=" + str.tostring(zScore, "#.00") + " (need +" + str.tostring(zEntryThresh, "#.0") + " to +" + str.tostring(zMaxThresh, "#.0") + ")" : (zRequirePA and not zBearPA ? "z=" + str.tostring(zScore, "#.00") + " ok, no bear PA" : "blocked"))
+        tip := tip + "• FVG: " + fvgMsg + "\n• Pullback: " + pbMsg + "\n• Z-Score: " + zMsg
+    label.new(bar_index, high, text="", yloc=yloc.abovebar, style=label.style_circle, color=color.new(color.gray, 40), size=size.tiny, tooltip=tip)
+
+// ----- MSS-trap flags: shown in 'Flag only' mode (no trade); in 'Take trades' mode the entry circle shows instead -----
+if mssEngineMode == "Flag only" and mssLong
+    string t = "MSS BULLISH trap — would LONG\n• swept swing low: " + str.tostring(bullLevel, format.mintick) + "\n• stop ref (sweep low): " + str.tostring(bullSweepLo, format.mintick) + "\n• entry timing: " + mssEntryMode + (mssRequireCVD ? "\n• CVD-confirmed" : "")
+    label.new(bar_index, low, text="", yloc=yloc.belowbar, style=label.style_triangleup, color=color.new(color.yellow, 0), size=size.small, tooltip=t)
+if mssEngineMode == "Flag only" and mssShort
+    string t = "MSS BEARISH trap — would SHORT\n• swept swing high: " + str.tostring(bearLevel, format.mintick) + "\n• stop ref (sweep high): " + str.tostring(bearSweepHi, format.mintick) + "\n• entry timing: " + mssEntryMode + (mssRequireCVD ? "\n• CVD-confirmed" : "")
+    label.new(bar_index, high, text="", yloc=yloc.abovebar, style=label.style_triangledown, color=color.new(color.yellow, 0), size=size.small, tooltip=t)
+
+pH = plot(showBand ? emaHigh : na, "EMA33 High", color=color.new(color.green, 70))
+pL = plot(showBand ? emaLow  : na, "EMA33 Low",  color=color.new(color.red,   70))
+fill(pH, pL, color=color.new(color.gray, 90))
+
+// Z-score shown in the Data Window only (no chart clutter) for tuning thresholds
+plot(enableZScore ? zScore : na, "Z-Score (signal-TF)", color=color.new(color.orange, 0), display=display.data_window)
+
+// ============================================================================
+//  OPT.SCAN v13 — WEBHOOK EMIT BLOCK  (offload the final gate to Python)
+// ============================================================================
+//  HOW TO USE
+//  1. Paste this entire block into your existing "OPT.SCAN v13 STRATEGY"
+//     script, near the END — just BEFORE the `pH = plot(...)` lines.
+//     It is PURELY ADDITIVE: it modifies nothing above it. Your strategy
+//     backtest and every chart marker/tooltip stay as-is and remain your
+//     visual-debugging reference.
+//  2. In TradingView: create an Alert on this strategy, set Condition to
+//     "Any alert() function call", paste your ngrok/FastAPI webhook URL,
+//     and set expiry/"Open-ended". Alerts only fire on real-time bars.
+//
+//  WHAT IT DOES
+//  Fires alert() with a JSON snapshot on every RAW confluence signal:
+//  count >= min filters  +  EMA-state gate  +  volatility gate  +  range gate,
+//  on bar close, BEFORE cooldown / refinement / regime. The Python backend
+//  applies the final regime-aware gate, cooldown, and refinement, and makes
+//  the go/no-go. (Volatility + range stay here as coarse pre-filters only to
+//  keep webhook volume sane; their values are still emitted.)
+// ============================================================================
+
+grpEmit = "Webhook Emit (Python backend gate)"
+enableEmit = input.bool(true, "Emit confluence signal to webhook", group=grpEmit, tooltip="Fires alert() with a JSON snapshot of all 12 filter states, the z-score and its zones, FVG/pullback states, ADX/ATR, range ratio, MSS state and structure — on every raw confluence signal (no cooldown / refinement / regime applied here). The Python backend owns the final gate. Set up a TradingView alert on this strategy with condition 'Any alert() function call' and your webhook URL.")
+
+// true/false helper so the payload is valid JSON (booleans, not quoted strings)
+b2s(_b) => _b ? "true" : "false"
+
+// Emit trigger = raw confluence (count + EMA gate) + vol + range + new bar + direction.
+// NO cooldown and NO refinement here — Python owns those.
+emitLong  = enableEmit and bullCondition and isNewSignalBar and volGateOk and rangeGateOk and allowLong
+emitShort = enableEmit and bearCondition and isNewSignalBar and volGateOk and rangeGateOk and allowShort
+
+if emitLong
+    string msg = '{"v":"optscan-v13"'
+    msg := msg + ',"sym":"' + syminfo.ticker + '"'
+    msg := msg + ',"tf":"' + signalTF + '"'
+    msg := msg + ',"dir":"long"'
+    msg := msg + ',"bar_time":' + str.tostring(time)
+    msg := msg + ',"price":' + str.tostring(close, format.mintick)
+    msg := msg + ',"atr":' + str.tostring(atrVal, "#.##")
+    msg := msg + ',"adx":' + str.tostring(adxVal, "#.##")
+    msg := msg + ',"filters":' + str.tostring(bullCount)
+    msg := msg + ',"f_ema":' + b2s(f_emaState_bull)
+    msg := msg + ',"f_rsi":' + b2s(f_rsi_bull)
+    msg := msg + ',"f_vol":' + b2s(f_vol)
+    msg := msg + ',"f_vwap":' + b2s(f_aboveVwap)
+    msg := msg + ',"f_mvwap":' + b2s(f_aboveMvwap)
+    msg := msg + ',"f_band":' + b2s(f_aboveBand)
+    msg := msg + ',"f_cvd":' + b2s(f_cvd_bull)
+    msg := msg + ',"f_st":' + b2s(f_st_bull)
+    msg := msg + ',"f_macd":' + b2s(f_macd_bull)
+    msg := msg + ',"f_poc":' + b2s(f_poc_bull)
+    msg := msg + ',"f_mss":' + b2s(f_mss_bull)
+    msg := msg + ',"f_adx":' + b2s(f_adx_bull)
+    msg := msg + ',"z":' + str.tostring(zScore, "#.####")
+    msg := msg + ',"z_long_zone":' + b2s(zLongZone)
+    msg := msg + ',"z_short_zone":' + b2s(zShortZone)
+    msg := msg + ',"z_bull_pa":' + b2s(zBullPA)
+    msg := msg + ',"z_bear_pa":' + b2s(zBearPA)
+    msg := msg + ',"fvg_ok":' + b2s(fvgLongOk)
+    msg := msg + ',"pb_ok":' + b2s(pullbackRawLong)
+    msg := msg + ',"vol_ok":' + b2s(volGateOk)
+    msg := msg + ',"range_ratio":' + str.tostring(rangeRatio, "#.##")
+    msg := msg + ',"bars_since":' + str.tostring(barsSinceBull)
+    msg := msg + ',"hh":' + b2s(higherHigh)
+    msg := msg + ',"ll":' + b2s(lowerLow)
+    msg := msg + ',"ext_long":' + b2s(extendedLong)
+    msg := msg + ',"ext_short":' + b2s(extendedShort)
+    msg := msg + ',"mss_state":' + str.tostring(mssState)
+    msg := msg + '}'
+    alert(msg, alert.freq_once_per_bar_close)
+
+if emitShort
+    string msg = '{"v":"optscan-v13"'
+    msg := msg + ',"sym":"' + syminfo.ticker + '"'
+    msg := msg + ',"tf":"' + signalTF + '"'
+    msg := msg + ',"dir":"short"'
+    msg := msg + ',"bar_time":' + str.tostring(time)
+    msg := msg + ',"price":' + str.tostring(close, format.mintick)
+    msg := msg + ',"atr":' + str.tostring(atrVal, "#.##")
+    msg := msg + ',"adx":' + str.tostring(adxVal, "#.##")
+    msg := msg + ',"filters":' + str.tostring(bearCount)
+    msg := msg + ',"f_ema":' + b2s(f_emaState_bear)
+    msg := msg + ',"f_rsi":' + b2s(f_rsi_bear)
+    msg := msg + ',"f_vol":' + b2s(f_vol)
+    msg := msg + ',"f_vwap":' + b2s(f_belowVwap)
+    msg := msg + ',"f_mvwap":' + b2s(f_belowMvwap)
+    msg := msg + ',"f_band":' + b2s(f_belowBand)
+    msg := msg + ',"f_cvd":' + b2s(f_cvd_bear)
+    msg := msg + ',"f_st":' + b2s(f_st_bear)
+    msg := msg + ',"f_macd":' + b2s(f_macd_bear)
+    msg := msg + ',"f_poc":' + b2s(f_poc_bear)
+    msg := msg + ',"f_mss":' + b2s(f_mss_bear)
+    msg := msg + ',"f_adx":' + b2s(f_adx_bear)
+    msg := msg + ',"z":' + str.tostring(zScore, "#.####")
+    msg := msg + ',"z_long_zone":' + b2s(zLongZone)
+    msg := msg + ',"z_short_zone":' + b2s(zShortZone)
+    msg := msg + ',"z_bull_pa":' + b2s(zBullPA)
+    msg := msg + ',"z_bear_pa":' + b2s(zBearPA)
+    msg := msg + ',"fvg_ok":' + b2s(fvgShortOk)
+    msg := msg + ',"pb_ok":' + b2s(pullbackRawShort)
+    msg := msg + ',"vol_ok":' + b2s(volGateOk)
+    msg := msg + ',"range_ratio":' + str.tostring(rangeRatio, "#.##")
+    msg := msg + ',"bars_since":' + str.tostring(barsSinceBear)
+    msg := msg + ',"hh":' + b2s(higherHigh)
+    msg := msg + ',"ll":' + b2s(lowerLow)
+    msg := msg + ',"ext_long":' + b2s(extendedLong)
+    msg := msg + ',"ext_short":' + b2s(extendedShort)
+    msg := msg + ',"mss_state":' + str.tostring(mssState)
+    msg := msg + '}'
+    alert(msg, alert.freq_once_per_bar_close)
