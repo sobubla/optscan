@@ -210,7 +210,11 @@ async def scan_loop():
                             expiry = strike_selector.next_weekly_expiry(
                                 date.today(), min_dte=settings.ENTRY_MIN_DTE
                             )
-                            ol_chain = _openalgo.get_option_greeks(idx, expiry)
+                            expiry_ddmmmyy = datetime.strptime(expiry, "%d-%b-%Y").strftime("%d%b%y").upper()
+                            ol_chain_data = _openalgo.get_enriched_chain(
+                                idx, "NSE_INDEX", expiry_ddmmmyy, strike_count=20
+                            )
+                            ol_chain = ol_chain_data["strikes"]
                             for pos in active_for_idx:
                                 ltp = _find_ltp(ol_chain, pos.strike, pos.option_type)
                                 if ltp is None:
@@ -375,13 +379,18 @@ async def optscan_webhook(payload: OptScanPayload):
                 expiry = strike_selector.next_weekly_expiry(
                     date.today(), min_dte=settings.ENTRY_MIN_DTE
                 )
-                chain = _openalgo.get_option_greeks(payload.sym, expiry)
+                expiry_ddmmmyy = datetime.strptime(expiry, "%d-%b-%Y").strftime("%d%b%y").upper()
+                chain_data = _openalgo.get_enriched_chain(
+                    payload.sym, "NSE_INDEX", expiry_ddmmmyy, strike_count=20
+                )
+                chain = chain_data["strikes"]
+                spot = chain_data.get("underlying_ltp") or payload.price
                 iv_hist = fyers._iv_history.get(payload.sym.upper(), [])
                 suggestion = strike_selector.evaluate(
                     sym=payload.sym,
                     direction=payload.dir,
                     regime=decision.regime,
-                    spot=payload.price,
+                    spot=spot,
                     atr=payload.atr,
                     chain=chain,
                     iv_history=iv_hist,
