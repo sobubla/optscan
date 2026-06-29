@@ -286,10 +286,12 @@ def evaluate(
         logger.warning("ENTRY SKIP — chain has no expiry field for %s %s", sym, direction)
         return None
 
-    # -- Lot size from config --------------------------------------------------
-    lot_size = 1
-    if hasattr(config, "INDICES"):
-        lot_size = config.INDICES.get(sym.upper(), {}).get("lot_size", 1)
+    # -- Lot size: prefer live value from chain rows (OpenAlgo carries it),
+    # fall back to config for the Fyers path where chain rows have no lotsize.
+    lot_size = next((r["lotsize"] for r in chain if r.get("lotsize", 0) > 0), None)
+    if not lot_size and hasattr(config, "INDICES"):
+        lot_size = config.INDICES.get(sym.upper(), {}).get("lot_size", 1) or 1
+    lot_size = lot_size or 1
 
     # 1. Strike selection -------------------------------------------------------
     row = select_strike(

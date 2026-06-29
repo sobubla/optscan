@@ -194,3 +194,51 @@ def test_lots_from_premium_at_risk():
     assert compute_lots(20.0, 75, 500_000.0, 0.02) == 6
     # minimum is 1 even when premium is enormous
     assert compute_lots(50_000.0, 75, 10_000.0, 0.02) == 1
+
+
+# ──────────────────── 7. lotsize from chain row ───────────────────────────────
+
+def test_evaluate_uses_lotsize_from_chain_row():
+    """
+    When chain rows carry lotsize=50, evaluate() uses that for sizing,
+    ignoring _Cfg.INDICES["BANKNIFTY"]["lot_size"] = 30.
+
+    equity=200_000, risk_pct=0.02 → risk_capital=4_000
+    strike 44500, call_ltp=320.0 (nearest in-band delta=0.48)
+    cost_per_lot = 320 * 50 = 16_000 → lots = floor(4_000/16_000) = 0 → min 1
+    If lot_size=30 instead: cost = 320*30=9_600 → lots = floor(4_000/9_600) = 0 → min 1
+
+    Both round down to 1 here, so we instead test a premium where the two lot sizes
+    produce *different* lots.  Use a small premium (20.0) on a high-lotsize row:
+    cost_per_lot=20*50=1_000 → lots=4  (50-row wins)
+    cost_per_lot=20*30=600  → lots=6  (30-row wins)
+
+    We inject lotsize=50 into the chain rows and assert lots==4 (not 6).
+    """
+    # Build a chain identical to FAR_CHAIN but with lotsize=50 on every row.
+    chain_with_lotsize = [
+        {**row, "lotsize": 50, "call_ltp": 20.0, "put_ltp": 20.0}
+        for row in FAR_CHAIN
+    ]
+
+    class _CfgLotsize(_Cfg):
+        EQUITY_RUPEES = 200_000
+        ENTRY_RISK_PCT = 0.02
+
+    # iv_history values must be above 0.185 so the current IV percentile is low (<70)
+    # and the IV-rich check doesn't reject the candidate.
+    result = evaluate(
+        sym="BANKNIFTY",
+        direction="long",
+        regime="trending",
+        spot=44_500.0,
+        atr=150.0,
+        chain=chain_with_lotsize,
+        iv_history=[0.25] * 30,
+        today=date(2024, 1, 30),
+        mode="intraday",
+        config=_CfgLotsize(),
+    )
+    # With lotsize=50: cost_per_lot=20*50=1000 → lots=floor(4000/1000)=4
+    assert result is not None
+    assert result.lots == 4

@@ -31,7 +31,7 @@ from pydantic import BaseModel
 
 from config import settings
 from backend.fyers_client import FyersDataClient
-from backend.scanner import OptionScanner
+from backend.scanner import OptionScanner, _oa_chain_to_flat
 from backend.exit_manager import ExitManager
 from backend.journal import (
     init_db, log_signal, log_optscan_signal,
@@ -93,6 +93,24 @@ _last_iv_record_date: Dict[str, str] = {}
 
 # Track signals we've already logged this session
 _logged_signal_keys = set()
+
+
+def _pick_expiry(sym: str, min_dte: int) -> str:
+    """Return nearest expiry with DTE >= min_dte in '%d-%b-%Y' format.
+
+    Calls OpenAlgo get_expiry() when configured; falls back to
+    strike_selector.next_weekly_expiry() (Thursday heuristic) otherwise.
+    """
+    if _openalgo:
+        try:
+            today = date.today()
+            for ddmmmyy in _openalgo.get_expiry(sym, "NFO"):
+                expiry_date = datetime.strptime(ddmmmyy, "%d%b%y").date()
+                if (expiry_date - today).days >= min_dte:
+                    return expiry_date.strftime("%d-%b-%Y")
+        except Exception as exc:
+            logger.warning("OpenAlgo get_expiry failed for %s: %s", sym, exc)
+    return strike_selector.next_weekly_expiry(date.today(), min_dte=min_dte)
 
 
 def _find_ltp(chain: list, strike: int, option_type: str) -> Optional[float]:
@@ -182,7 +200,27 @@ async def scan_loop():
         try:
             for idx in settings.INDICES.keys():
                 try:
-                    result = scanner.scan_index(idx)
+                    # Fetch OpenAlgo chain once per index per cycle when configured.
+                    # The same chain_data is shared with the scanner and GEX provider,
+                    # avoiding redundant Fyers calls. min_dte=0 picks the front expiry
+                    # (including expiry-day for maximum accuracy).
+                    oa_chain_data = None
+                    if _openalgo:
+                        try:
+                            front_expiry = _pick_expiry(idx, min_dte=0)
+                            oa_expiry_ddmmmyy = datetime.strptime(
+                                front_expiry, "%d-%b-%Y"
+                            ).strftime("%d%b%y").upper()
+                            oa_chain_data = _openalgo.get_enriched_chain(
+                                idx, "NSE_INDEX", oa_expiry_ddmmmyy,
+                                strike_count=settings.STRIKES_AROUND_ATM,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "OpenAlgo chain fetch failed for %s — Fyers fallback", idx
+                            )
+
+                    result = scanner.scan_index(idx, oa_chain_data=oa_chain_data)
                     latest_scans[idx] = result
 
                     # Record today's ATM IV once per day
@@ -191,59 +229,74 @@ async def scan_loop():
                     # Log signal to journal (deduped by key)
                     _maybe_log_signal(idx, result)
 
-                    # Push fresh chain to GEX regime provider if active
+                    # Push fresh chain to GEX regime provider if active.
+                    # Reuse oa_chain_data (converted to flat) when available to avoid
+                    # a second Fyers chain call.
                     if isinstance(gate.regime_provider, GexRegimeProvider):
                         spot = result.get("spot", 0) if isinstance(result, dict) else 0
                         if spot > 0:
-                            lot_size = settings.INDICES[idx].get("lot_size", 1)
-                            chain_for_gex = fyers.get_option_chain(idx)
-                            gate.regime_provider.update_chain(chain_for_gex, spot, lot_size)
+                            if oa_chain_data and oa_chain_data.get("strikes"):
+                                flat_for_gex = _oa_chain_to_flat(oa_chain_data["strikes"])
+                                lot_size = (
+                                    oa_chain_data["strikes"][0].get("lotsize")
+                                    or settings.INDICES[idx].get("lot_size", 1)
+                                )
+                            else:
+                                flat_for_gex = fyers.get_option_chain(idx)
+                                lot_size = settings.INDICES[idx].get("lot_size", 1)
+                            gate.regime_provider.update_chain(flat_for_gex, spot, lot_size)
 
                     # Exit monitor: check gate-layer positions for this index.
-                    # Uses OpenAlgo chain (OpenAlgo-format LTP/IV); skipped if not configured.
+                    # Each position is checked against a chain for its own expiry
+                    # (not a heuristic), grouped to minimise API calls.
                     active_for_idx = [
                         p for p in _active_positions.values()
                         if p.sym.upper() == idx.upper()
                     ]
                     if active_for_idx and _openalgo:
-                        try:
-                            expiry = strike_selector.next_weekly_expiry(
-                                date.today(), min_dte=settings.ENTRY_MIN_DTE
-                            )
-                            expiry_ddmmmyy = datetime.strptime(expiry, "%d-%b-%Y").strftime("%d%b%y").upper()
-                            ol_chain_data = _openalgo.get_enriched_chain(
-                                idx, "NSE_INDEX", expiry_ddmmmyy, strike_count=20
-                            )
-                            ol_chain = ol_chain_data["strikes"]
-                            for pos in active_for_idx:
-                                ltp = _find_ltp(ol_chain, pos.strike, pos.option_type)
-                                if ltp is None:
-                                    continue
-                                iv = _find_iv(ol_chain, pos.strike, pos.option_type)
-                                state = exit_monitor.MarketState(
-                                    current_premium=ltp,
-                                    current_iv=iv if iv is not None else pos.entry_iv,
-                                    current_regime=gate.regime_provider.current_regime,
-                                    now=datetime.now(),
-                                )
-                                signal = exit_monitor.check_exit(pos, state, settings)
-                                if signal:
-                                    from dataclasses import asdict
-                                    log_exit_suggestion(asdict(signal))
-                                    del _active_positions[pos.position_id]
-                                    # Clear any reversal advisory for this sym now that
-                                    # the position is gone — the conflict is resolved.
-                                    _position_conflicts.pop(pos.sym, None)
-                                    logger.warning(
-                                        "EXIT SIGNAL — %s trigger=%s pnl=%.1f%% [awaiting approval]",
-                                        pos.position_id, signal.trigger, signal.pnl_pct,
-                                    )
-                        except Exception:
-                            logger.exception("Exit monitor error for %s — positions retained", idx)
+                        # Group positions by expiry — one chain fetch per distinct expiry.
+                        by_expiry: Dict[str, list] = {}
+                        for pos in active_for_idx:
+                            by_expiry.setdefault(pos.expiry, []).append(pos)
 
-                    # Update live prices for open positions.
-                    # Fetch the chain only IF there's an open position for this index
-                    # (avoids unnecessary API calls when no positions are open).
+                        for expiry_display, positions in by_expiry.items():
+                            try:
+                                pos_expiry_ddmmmyy = datetime.strptime(
+                                    expiry_display, "%d-%b-%Y"
+                                ).strftime("%d%b%y").upper()
+                                ol_chain_data = _openalgo.get_enriched_chain(
+                                    idx, "NSE_INDEX", pos_expiry_ddmmmyy, strike_count=20
+                                )
+                                ol_chain = ol_chain_data["strikes"]
+                                for pos in positions:
+                                    ltp = _find_ltp(ol_chain, pos.strike, pos.option_type)
+                                    if ltp is None:
+                                        continue
+                                    iv = _find_iv(ol_chain, pos.strike, pos.option_type)
+                                    state = exit_monitor.MarketState(
+                                        current_premium=ltp,
+                                        current_iv=iv if iv is not None else pos.entry_iv,
+                                        current_regime=gate.regime_provider.current_regime,
+                                        now=datetime.now(),
+                                    )
+                                    signal = exit_monitor.check_exit(pos, state, settings)
+                                    if signal:
+                                        from dataclasses import asdict
+                                        log_exit_suggestion(asdict(signal))
+                                        del _active_positions[pos.position_id]
+                                        _position_conflicts.pop(pos.sym, None)
+                                        logger.warning(
+                                            "EXIT SIGNAL — %s trigger=%s pnl=%.1f%% [awaiting approval]",
+                                            pos.position_id, signal.trigger, signal.pnl_pct,
+                                        )
+                            except Exception:
+                                logger.exception(
+                                    "Exit monitor error for %s expiry=%s — positions retained",
+                                    idx, expiry_display,
+                                )
+
+                    # Update live prices for ExitManager positions (legacy scanner path).
+                    # Fetch the chain only IF there's an open position for this index.
                     open_for_this_idx = [p for p in exits.get_open_positions() if p["index"] == idx]
                     if open_for_this_idx:
                         chain = fyers.get_option_chain(idx)
@@ -376,9 +429,7 @@ async def optscan_webhook(payload: OptScanPayload):
             # No conflict and OpenAlgo is configured → generate entry suggestion.
             try:
                 from dataclasses import asdict
-                expiry = strike_selector.next_weekly_expiry(
-                    date.today(), min_dte=settings.ENTRY_MIN_DTE
-                )
+                expiry = _pick_expiry(payload.sym, min_dte=settings.ENTRY_MIN_DTE)
                 expiry_ddmmmyy = datetime.strptime(expiry, "%d-%b-%Y").strftime("%d%b%y").upper()
                 chain_data = _openalgo.get_enriched_chain(
                     payload.sym, "NSE_INDEX", expiry_ddmmmyy, strike_count=20

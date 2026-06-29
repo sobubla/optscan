@@ -9,6 +9,43 @@ from typing import Dict, List, Optional
 
 from config import settings
 
+
+def _oa_chain_to_flat(oa_strikes: list) -> list:
+    """
+    Convert an OpenAlgo enriched chain (one row per strike, call+put together) to the
+    Fyers-compatible flat format used by scan_index internals (one row per leg).
+
+    IV conversion: OpenAlgo stores IV as annualized decimal (0.18 = 18%);
+    flat format uses percent (18.0) to match Fyers _parse_chain output.
+
+    lot_size is carried per-row as an extra field so _find_setups() can read it
+    without touching settings.INDICES.
+    """
+    flat = []
+    ts = datetime.now().isoformat()
+    for row in oa_strikes:
+        strike = row["strike"]
+        lotsize = row.get("lotsize", 0)
+        for prefix, opt_type in (("call", "CE"), ("put", "PE")):
+            flat.append({
+                "strike":        strike,
+                "type":          opt_type,
+                "ltp":           row.get(f"{prefix}_ltp", 0.0),
+                "bid":           row.get(f"{prefix}_bid", 0.0),
+                "ask":           row.get(f"{prefix}_ask", 0.0),
+                "volume":        row.get(f"{prefix}_volume", 0),
+                "oi":            row.get(f"{prefix}_oi", 0),
+                "oi_change_pct": 0.0,  # detect_oi_shift() recomputes from last_chains snapshot
+                "iv":            round(row.get(f"{prefix}_iv", 0.0) * 100, 2),
+                "delta":         row.get(f"{prefix}_delta", 0.0),
+                "gamma":         row.get(f"{prefix}_gamma", 0.0),
+                "theta":         row.get(f"{prefix}_theta", 0.0),
+                "vega":          row.get(f"{prefix}_vega", 0.0),
+                "timestamp":     ts,
+                "lot_size":      lotsize,
+            })
+    return flat
+
 logger = logging.getLogger(__name__)
 
 
@@ -112,16 +149,25 @@ class OptionScanner:
             pain_by_strike[test_strike] = total_pain
         return min(pain_by_strike, key=pain_by_strike.get)
 
-    def scan_index(self, index_key: str) -> Dict:
+    def scan_index(self, index_key: str, oa_chain_data: Optional[dict] = None) -> Dict:
         """
         Run full scan on one index. Returns dict with:
         - setups: list of qualifying option contracts to consider
         - market_context: PCR, max pain, IV regime, OI signal
         - tv_confirmation: whether TradingView signal aligns
+
+        If oa_chain_data is provided (from OpenAlgo get_enriched_chain()), spot and atm
+        come from its underlying_ltp / atm_strike fields and the chain is converted via
+        _oa_chain_to_flat(). Otherwise the Fyers client is used (fallback).
         """
-        chain = self.fyers.get_option_chain(index_key)
-        spot = self.fyers.get_spot_price(index_key)
-        atm = self.fyers.get_atm_strike(index_key)
+        if oa_chain_data is not None:
+            spot = oa_chain_data["underlying_ltp"]
+            atm  = oa_chain_data["atm_strike"]
+            chain = _oa_chain_to_flat(oa_chain_data["strikes"])
+        else:
+            chain = self.fyers.get_option_chain(index_key)
+            spot = self.fyers.get_spot_price(index_key)
+            atm = self.fyers.get_atm_strike(index_key)
 
         # Market-wide context
         atm_options = [o for o in chain if o["strike"] == atm]
@@ -191,8 +237,10 @@ class OptionScanner:
             if efficiency < settings.MIN_GAMMA_THETA_RATIO:
                 continue
 
-            # Capital check
-            premium_cost = opt["ltp"] * settings.INDICES[index_key]["lot_size"]
+            # Capital check — prefer live lotsize from chain row (OpenAlgo path),
+            # fall back to settings for Fyers path which doesn't carry lotsize.
+            lot_size = opt.get("lot_size") or settings.INDICES[index_key]["lot_size"]
+            premium_cost = opt["ltp"] * lot_size
             if premium_cost > settings.MAX_CAPITAL_PER_TRADE_RUPEES:
                 continue
 
