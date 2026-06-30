@@ -172,3 +172,35 @@ def test_scan_index_fyers_called_when_no_oa():
     sc.fyers.get_option_chain.assert_called_once_with("NIFTY")
     sc.fyers.get_spot_price.assert_called_once_with("NIFTY")
     assert result["spot"] == pytest.approx(52000.0)
+
+
+def test_scan_index_empty_chain_returns_degraded():
+    """Empty chain (from either OA or Fyers) returns degraded health instead of crashing.
+
+    Previously calculate_max_pain() raised ValueError: min() arg is an empty sequence.
+    The short-circuit in scan_index() must catch this before any helper is called.
+    """
+    sc = _make_scanner()
+    # OA path with strikes=[] produces an empty flat chain
+    empty_oa = {
+        "underlying_ltp": 53000.0,
+        "atm_strike": 53000,
+        "expiry_ddmmmyy": "27JUN26",
+        "strikes": [],
+    }
+    result = sc.scan_index("BANKNIFTY", oa_chain_data=empty_oa)
+    assert result["health"]["state"] == "degraded"
+    assert "empty" in result["health"]["reason"]
+    assert result["setups"] == []
+    assert result["market_context"] is None
+
+
+def test_scan_index_empty_fyers_chain_returns_degraded():
+    """Fyers returning an empty chain also degrades cleanly (no crash)."""
+    sc = _make_scanner()
+    sc.fyers.get_option_chain.return_value = []
+    sc.fyers.get_spot_price.return_value = 0.0
+    sc.fyers.get_atm_strike.return_value = 0
+    result = sc.scan_index("NIFTY")
+    assert result["health"]["state"] == "degraded"
+    assert result["setups"] == []

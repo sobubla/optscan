@@ -169,6 +169,24 @@ class OptionScanner:
             spot = self.fyers.get_spot_price(index_key)
             atm = self.fyers.get_atm_strike(index_key)
 
+        # Empty chain is a data-availability problem: return degraded cleanly instead
+        # of crashing in calculate_max_pain (min() on empty sequence) or poisoning
+        # detect_oi_shift's last_chains snapshot.
+        if not chain:
+            return {
+                "index": index_key,
+                "spot": spot,
+                "atm": atm,
+                "timestamp": datetime.now().isoformat(),
+                "market_context": None,
+                "setups": [],
+                "health": {
+                    "state": "degraded",
+                    "reason": "option chain empty — no data from OpenAlgo or Fyers",
+                    "ts": datetime.now().isoformat(),
+                },
+            }
+
         # Market-wide context
         atm_options = [o for o in chain if o["strike"] == atm]
         avg_iv = sum(o["iv"] for o in atm_options) / len(atm_options) if atm_options else 0
@@ -201,6 +219,7 @@ class OptionScanner:
                 "tv_signal": tv_sig.get("action") if tv_sig else None,
             },
             "setups": setups,
+            "health": {"state": "ok", "reason": None, "ts": datetime.now().isoformat()},
         }
 
     def _find_setups(self, chain, atm, spot, oi_signal, tv_sig, index_key) -> List[Dict]:
