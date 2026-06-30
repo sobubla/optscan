@@ -195,6 +195,22 @@
     border: 1px dashed var(--line);
     background: var(--bg-elev);
   }
+  /* ===== PANEL HEALTH STATES ===== */
+  /* degraded — mirrors .conflict-card amber pattern */
+  .empty.paused {
+    border-color: var(--amber);
+    background: rgba(255,170,51,0.06);
+    color: var(--amber);
+  }
+  /* error — mirrors .exit-alert.critical red pattern */
+  .empty.error-state {
+    border-color: var(--red);
+    background: rgba(255,71,87,0.06);
+    color: var(--red);
+  }
+  /* pulse dot state variants */
+  .pulse-dot.degraded { background: var(--amber); }
+  .pulse-dot.error    { background: var(--red); }
   /* ===== EXIT ALERTS ===== */
   .exit-alerts-bar {
     position: fixed;
@@ -505,7 +521,16 @@ function renderContext(ctxEl, ctx) {
   `;
 }
 
-function renderSetups(setupsEl, setups) {
+function renderSetups(setupsEl, setups, health) {
+  const hs = health?.state;
+  if (hs === 'error') {
+    setupsEl.innerHTML = `<div class="empty error-state">data error · ${health.reason || 'check server logs'}</div>`;
+    return;
+  }
+  if (hs === 'degraded') {
+    setupsEl.innerHTML = `<div class="empty paused">entries paused · ${health.reason || 'system degraded'}</div>`;
+    return;
+  }
   if (!setups || setups.length === 0) {
     setupsEl.innerHTML = `<div class="empty">No qualifying setups · waiting for confluence</div>`;
     return;
@@ -545,7 +570,7 @@ async function refresh() {
 
       panel.querySelector('[data-spot]').textContent = fmt(scan.spot, 0);
       renderContext(panel.querySelector('[data-context]'), scan.market_context);
-      renderSetups(panel.querySelector('[data-setups]'), scan.setups);
+      renderSetups(panel.querySelector('[data-setups]'), scan.setups, scan.health);
       const count = (scan.setups || []).length;
       panel.querySelector('[data-setup-count]').textContent = count;
       totalSetups += count;
@@ -553,6 +578,21 @@ async function refresh() {
 
     document.getElementById('setupCount').textContent = totalSetups;
     document.getElementById('lastScan').textContent = new Date().toLocaleTimeString();
+
+    // Update header pulse dot and status text based on aggregate health across all indices.
+    const allScans = Object.values(data);
+    const dot = document.querySelector('.pulse-dot');
+    if (allScans.some(d => d.health?.state === 'error')) {
+      dot.className = 'pulse-dot error';
+      document.getElementById('liveStatus').textContent = 'ERROR · check server logs';
+    } else if (allScans.some(d => d.health?.state === 'degraded')) {
+      const first = allScans.find(d => d.health?.state === 'degraded');
+      dot.className = 'pulse-dot degraded';
+      document.getElementById('liveStatus').textContent = `DEGRADED · ${first.health.reason}`;
+    } else {
+      dot.className = 'pulse-dot';
+      document.getElementById('liveStatus').textContent = 'LIVE · scanning every 30s';
+    }
 
     // positions
     const posRes = await fetch(`${API}/api/positions`);

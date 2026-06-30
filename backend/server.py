@@ -88,6 +88,10 @@ _active_positions: Dict[str, exit_monitor.OpenPosition] = {}
 _position_conflicts: Dict[str, dict] = {}
 latest_scans: Dict[str, dict] = {}
 
+# Minimum IV history samples for a reliable percentile estimate.
+# Below this count, iv_percentile() returns 100 (conservative) — treat as degraded.
+_IV_HISTORY_MIN_SAMPLES = 20
+
 # Track when we last recorded daily IV per index (one record/day)
 _last_iv_record_date: Dict[str, str] = {}
 
@@ -95,11 +99,12 @@ _last_iv_record_date: Dict[str, str] = {}
 _logged_signal_keys = set()
 
 
-def _pick_expiry(sym: str, min_dte: int) -> str:
-    """Return nearest expiry with DTE >= min_dte in '%d-%b-%Y' format.
+def _pick_expiry(sym: str, min_dte: int) -> tuple[str, bool]:
+    """Return (expiry_str '%d-%b-%Y', used_heuristic).
 
-    Calls OpenAlgo get_expiry() when configured; falls back to
-    strike_selector.next_weekly_expiry() (Thursday heuristic) otherwise.
+    used_heuristic=False when OpenAlgo returned a real dated list.
+    used_heuristic=True when OpenAlgo failed/unavailable and the Thursday
+    heuristic was used instead — caller should mark health as degraded.
     """
     if _openalgo:
         try:
@@ -107,10 +112,10 @@ def _pick_expiry(sym: str, min_dte: int) -> str:
             for ddmmmyy in _openalgo.get_expiry(sym, "NFO"):
                 expiry_date = datetime.strptime(ddmmmyy, "%d%b%y").date()
                 if (expiry_date - today).days >= min_dte:
-                    return expiry_date.strftime("%d-%b-%Y")
+                    return expiry_date.strftime("%d-%b-%Y"), False
         except Exception as exc:
             logger.warning("OpenAlgo get_expiry failed for %s: %s", sym, exc)
-    return strike_selector.next_weekly_expiry(date.today(), min_dte=min_dte)
+    return strike_selector.next_weekly_expiry(date.today(), min_dte=min_dte), True
 
 
 def _find_ltp(chain: list, strike: int, option_type: str) -> Optional[float]:
@@ -200,14 +205,24 @@ async def scan_loop():
         try:
             for idx in settings.INDICES.keys():
                 try:
+                    # Health accumulator: first degraded condition wins (ok→degraded→error).
+                    _ts = datetime.now().isoformat
+                    health: dict = {"state": "ok", "reason": None, "ts": _ts()}
+
+                    def _degrade(reason: str) -> None:
+                        if health["state"] == "ok":
+                            health.update({"state": "degraded", "reason": reason, "ts": _ts()})
+
                     # Fetch OpenAlgo chain once per index per cycle when configured.
                     # The same chain_data is shared with the scanner and GEX provider,
                     # avoiding redundant Fyers calls. min_dte=0 picks the front expiry
                     # (including expiry-day for maximum accuracy).
                     oa_chain_data = None
                     if _openalgo:
+                        front_expiry, expiry_heuristic = _pick_expiry(idx, min_dte=0)
+                        if expiry_heuristic:
+                            _degrade("Expiry from heuristic — OpenAlgo expiry unavailable")
                         try:
-                            front_expiry = _pick_expiry(idx, min_dte=0)
                             oa_expiry_ddmmmyy = datetime.strptime(
                                 front_expiry, "%d-%b-%Y"
                             ).strftime("%d%b%y").upper()
@@ -215,12 +230,38 @@ async def scan_loop():
                                 idx, "NSE_INDEX", oa_expiry_ddmmmyy,
                                 strike_count=settings.STRIKES_AROUND_ATM,
                             )
+                            if not oa_chain_data.get("strikes"):
+                                _degrade("OpenAlgo chain returned no strikes")
+                                oa_chain_data = None
                         except Exception:
                             logger.warning(
                                 "OpenAlgo chain fetch failed for %s — Fyers fallback", idx
                             )
+                            _degrade("OpenAlgo chain unavailable — Fyers fallback active")
+                            oa_chain_data = None
 
                     result = scanner.scan_index(idx, oa_chain_data=oa_chain_data)
+
+                    # Merge health: pre-scan conditions (OA unavailable, expiry heuristic)
+                    # take priority as root cause. If those were ok, keep what scan_index
+                    # set — it may be "degraded" for an empty chain (Fyers-only path).
+                    if health["state"] != "ok":
+                        result["health"] = health
+                    # else: result["health"] already set by scan_index (ok or degraded)
+
+                    # Cold IV history check — only apply if no degraded state is set yet,
+                    # so it doesn't mask a more specific reason.
+                    iv_samples = len(fyers._iv_history.get(idx, []))
+                    if iv_samples < _IV_HISTORY_MIN_SAMPLES and result["health"]["state"] == "ok":
+                        result["health"] = {
+                            "state": "degraded",
+                            "reason": (
+                                f"IV history cold ({iv_samples}/{_IV_HISTORY_MIN_SAMPLES} samples)"
+                                " — percentile estimate unreliable"
+                            ),
+                            "ts": datetime.now().isoformat(),
+                        }
+
                     latest_scans[idx] = result
 
                     # Record today's ATM IV once per day
@@ -313,8 +354,19 @@ async def scan_loop():
                                     match["iv"]
                                 )
                 except Exception as e:
-                    # Don't let one index failure crash the whole loop
+                    # Don't let one index failure crash the whole loop.
+                    # Record error state so the dashboard is not silently blank.
                     logger.exception(f"Scan failed for {idx}: {e}")
+                    latest_scans[idx] = {
+                        "index": idx, "spot": None, "atm": None,
+                        "timestamp": datetime.now().isoformat(),
+                        "market_context": None, "setups": [],
+                        "health": {
+                            "state": "error",
+                            "reason": str(e)[:120],
+                            "ts": datetime.now().isoformat(),
+                        },
+                    }
 
             exits.check_exits()
         except Exception as e:
@@ -429,7 +481,7 @@ async def optscan_webhook(payload: OptScanPayload):
             # No conflict and OpenAlgo is configured → generate entry suggestion.
             try:
                 from dataclasses import asdict
-                expiry = _pick_expiry(payload.sym, min_dte=settings.ENTRY_MIN_DTE)
+                expiry, _ = _pick_expiry(payload.sym, min_dte=settings.ENTRY_MIN_DTE)
                 expiry_ddmmmyy = datetime.strptime(expiry, "%d-%b-%Y").strftime("%d%b%y").upper()
                 chain_data = _openalgo.get_enriched_chain(
                     payload.sym, "NSE_INDEX", expiry_ddmmmyy, strike_count=20

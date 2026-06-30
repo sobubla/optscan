@@ -14,11 +14,11 @@ OPT.SCAN is an intraday options scanning and journaling system for NIFTY and Ban
 
 - **Signal layer** — Pine Script (v13) on TradingView: 12 confluence filters + hard gates (volatility, range expansion, cooldown), MSS-Trap Reversal Engine with CVD confirmation, z-score mean reversion, FVG logic, ATR trail. **Now emits the raw confluence signal as a JSON webhook** (see the gate-extraction section); its own chart markers/backtest remain as a visual reference only.
 - **Backend** — FastAPI service on `localhost:8000`. Receives the webhook, runs the **regime-aware gate** (the decision layer that used to live in Pine), persists results, and surfaces takes to the human-approval path.
-- **Data** — Fyers API for the live option chain. Fyers returns **no IV and no Greeks**, so IV is solved locally.
-- **IV / Greeks** — currently a pure-Python Black-Scholes + Newton-Raphson IV solver (being migrated to Black-76 via `py_vollib`).
+- **Data** — **OpenAlgo is the primary market-data layer** (broker-agnostic, consumed via its REST + WebSocket API only): option chain, Greeks, expiry, quotes, depth, history. Fyers (`fyers_client.py`) is the legacy/fallback source. See the OpenAlgo data-layer task below.
+- **IV / Greeks** — Black-76 (correct for forward-priced European index options). Server-side from OpenAlgo (`MultiOptionGreeks`, priced off the real future); `vollib` Black-76 in `fyers_client.py` is the local fallback. The old Black-Scholes + Newton-Raphson solver is retired.
 - **Journal** — SQLite. Source of truth for trade history and the training data for the meta-label.
 - **Dashboard** — terminal-aesthetic web UI.
-- **Brokers** — Fyers (primary), plus Shoonya and Angel One.
+- **Brokers** — Fyers (current data/exec), plus Shoonya and Angel One. **OpenAlgo abstracts the broker**, so adding Shoonya/Angel becomes config rather than a new client.
 
 ## Tech stack & running it
 
@@ -27,7 +27,7 @@ OPT.SCAN is an intraday options scanning and journaling system for NIFTY and Ban
 - Python 3.11, virtualenv.
 - FastAPI + Uvicorn (backend on port 8000).
 - SQLite (no server).
-- Key libs: `fastapi`, `uvicorn`, `pydantic`, an HTTP client (`httpx`/`requests`), `numpy`, `scipy`, and `py_vollib` (incoming).
+- Key libs: `fastapi`, `uvicorn`, `pydantic`, `requests` (HTTP), the **`openalgo`** Python client (primary data layer), `vollib`/`py_vollib` (Black-76 fallback), `optionlab` (candidate evaluation), `numpy`.
 
 ```bash
 # example — replace with your real commands
@@ -71,9 +71,57 @@ Workflow:
 
 ---
 
-## ACTIVE TASK — Webhook gate extraction (the decision layer moves from Pine to Python)
+## Current state (what's already built)
 
-**Why:** the Pine refinement gate (FVG / Pullback / Z-Score combine) is regime-blind. A mean-reversion z-gate vetoes momentum signals in trending markets — confirmed on two BANKNIFTY charts (a long blocked at z=+1.91 in an uptrend, a short blocked at z=-1.22 in a downtrend). The fix needs the trend/range regime, which only the backend can see. So Pine now emits the raw confluence signal and the backend makes the final, regime-aware decision.
+Much of the original roadmap is **done** — trust the code, not this file's history:
+- **Regime-aware gate** — `gate.py` (`Gate`, `AdxRegimeProvider`, `GexRegimeProvider`), `models.py` (`OptScanPayload`).
+- **Black-76 IV + Greeks** — `fyers_client.py` via `vollib` (old Newton-Raphson solver retired).
+- **GEX** — `gex.py` (per-strike / net GEX, gamma flip) feeding `GexRegimeProvider`.
+- **Strike-and-premium entry layer** — `strike_selector.py` (delta band, IV percentile, premium-at-risk sizing, optionlab eval).
+- **Exit gate** — `exit_monitor.py` (7 OR-triggers, premium terms, mode-aware).
+- **Journal + API + dashboard** — `journal.py`, `journal_routes.py`, Scanner + Journal frontend.
+
+Two known cleanups, both resolved by the OpenAlgo data layer below: (a) **two parallel exit systems** — `exit_monitor.py` (premium terms, matches this doc) vs `exit_manager.py` (%-terms, feeds the dashboard) — reconcile onto one; (b) **two setup finders** — `scanner._find_setups` (dashboard, Fyers chain) vs `strike_selector` (gate pipeline, OpenAlgo-shaped chain) — unify onto one chain source.
+
+## ACTIVE TASK — Consolidate the data layer onto OpenAlgo
+
+**Goal: make OpenAlgo the primary market-data source and shrink `fyers_client.py` to a fallback.** OpenAlgo already provides, server-side and broker-agnostic, most of what `fyers_client.py` hand-rolls. Consume the **REST + WebSocket API only** — never vendor OpenAlgo source (AGPL; see hard rules). `openalgo_client.py` exists but was written against an *assumed* response shape and is **not yet correct or wired in** — fixing and wiring it is this task.
+
+### Use these OpenAlgo endpoints (replace the hand-rolled equivalents)
+
+| Need | OpenAlgo endpoint | Replaces (in our code) |
+|---|---|---|
+| Expiry dates | `expiry(symbol, exchange, instrumenttype)` → real dated list | `fyers_client.days_to_nearest_expiry()` heuristic — **delete it** (its BankNifty "monthly ≈ Thu+14d" guess is wrong) |
+| Chain prices + spot + ATM + lot size | `optionchain(underlying, exchange="NSE_INDEX", expiry_date[, strike_count])` → `underlying_ltp`, `atm_strike`, per-strike `ce`/`pe` with `ltp/bid/ask/oi/volume/lotsize/tick_size` | chain fetch, the spot-extraction hack in `_parse_chain`, `get_spot_price`, and hardcoded `lot_size`/`step` in `settings.INDICES` |
+| IV + Greeks (Black-76) | `multioptiongreeks(...)` over the ATM±N symbols (pass `underlying_symbol=<FUT>` for a true forward, or `forward_price`) | local `vollib` solve in `fyers_client` (keep `vollib` as **offline fallback only**) |
+| Live price / IV per bar | WebSocket `subscribe_quote` / `subscribe_ltp` (+ cached reads) | `get_spot_price` polling + the 429 retry loop |
+| Backtest / feature history | `history(...)` + Historify (DuckDB) | nothing today (needed for the meta-label phase) |
+
+### Correct the endpoint shapes (this is where `openalgo_client.py` is wrong)
+
+- `optionchain` returns `{underlying_ltp, atm_strike, chain:[{strike, ce:{ltp,bid,ask,oi,volume,lotsize,tick_size,...}, pe:{...}}]}`. It does **not** include Greeks/IV.
+- `optiongreeks` is **per-option** (one symbol → one `{implied_volatility, greeks:{delta,gamma,theta,vega,rho}, days_to_expiry, spot_price}`). The current `get_option_greeks` assuming a CE/PE *chain row* is wrong — for a chain use `multioptiongreeks`, not a single call.
+- **An enriched chain = `optionchain` (prices/OI/lotsize) merged with `multioptiongreeks` (IV/Greeks) on the ATM±N strikes.** That merged per-strike shape (`call_delta`/`put_delta`/`call_oi`/`call_iv`/…) is exactly what `strike_selector.select_strike` already expects, so wiring it **completes the strike layer's intended data source**. `gex.py` / `GexRegimeProvider` consume the same enriched chain (adapt the per-strike field names).
+
+### Sequencing (lowest-risk first; keep Fyers as fallback throughout)
+
+1. **Fix `openalgo_client.py`** to the documented shapes (expiry, optionchain, quotes, multioptiongreeks, depth, history). Tests with mocked responses; no live calls.
+2. **Wire the no-math correctness wins first** into `scanner.py`: real `expiry`, live `lotsize`, and `underlying_ltp`/`atm_strike` from the chain. **No downside** — these fix real bugs (BankNifty expiry, stale hardcoded lot sizes).
+3. **Move Greeks to `multioptiongreeks`** (priced off the real future); keep `vollib` Black-76 as the offline fallback.
+4. **Add the WebSocket feed for `exit_monitor.py` first** — it needs `current_premium`/`current_iv` every bar; stream the open position's option symbol instead of polling.
+
+### Boundaries
+
+- **API only.** No OpenAlgo source copied in (AGPL). `openalgo-mcp` is MIT and may be lifted for the future agentic layer.
+- **Never log or print the OpenAlgo `apikey`** (already handled in `openalgo_client._post` — keep it that way).
+- **No execution.** This task is data only. Order placement (`optionsorder`/`placesmartorder`) and OpenAlgo's **Analyzer/sandbox** mode are future, human-approved work.
+- **Fallback, don't rip out.** Keep `fyers_client.py` and the local `vollib` solver as a fallback source, gated behind config, until OpenAlgo is proven live.
+
+## Webhook gate — BUILT (reference contract)
+
+**Status: implemented** in `gate.py` (regime router, `AdxRegimeProvider` + `GexRegimeProvider`) and `models.py` (`OptScanPayload`). Kept here as the reference for the webhook JSON contract and the gate's decision logic — **not active work**; the current active task is the OpenAlgo consolidation above.
+
+**Why it exists:** the Pine refinement gate (FVG / Pullback / Z-Score combine) is regime-blind. A mean-reversion z-gate vetoes momentum signals in trending markets — confirmed on two BANKNIFTY charts (a long blocked at z=+1.91 in an uptrend, a short blocked at z=-1.22 in a downtrend). The fix needs the trend/range regime, which only the backend can see. So Pine now emits the raw confluence signal and the backend makes the final, regime-aware decision.
 
 ### 1. Webhook contract (what Pine sends)
 
@@ -151,15 +199,15 @@ Strong success criteria. These must pass:
 
 ---
 
-## Options execution layer (design — build after the gate)
+## Options execution layer — BUILT (`strike_selector.py` + `exit_monitor.py`)
 
-After the gate returns a `take` on the index, this layer turns it into an option trade and manages it to exit. Two parts, both deterministic for now and both logging to the journal so the meta-label can tune them later. Prerequisites: priorities #1 (Black-76 IV) and #2 (GEX regime) below.
+**Status: implemented.** Reference design for the strike-and-premium entry layer (`strike_selector.py`) and the exit gate (`exit_monitor.py`) — both deterministic and logging to the journal for the meta-label. They consume an enriched option chain; the OpenAlgo consolidation (active task) feeds them the merged `optionchain` + `multioptiongreeks` chain.
 
 ### Strike-and-premium entry layer
 
 Input: gate `take` = `{dir, regime, spot, atr, time, sym}`.
 
-1. **Chain + Greeks** — fetch the option chain for `sym` + chosen expiry, enriched with IV and Greeks. *Use OpenAlgo `/optiongreeks` (Black-76) or `py_vollib` locally — do not build a solver.*
+1. **Chain + Greeks** — enriched chain from the OpenAlgo data layer (`optionchain` merged with `multioptiongreeks`); `vollib` Black-76 is the local fallback. *Do not build a solver.*
 2. **Expiry** — current weekly for intraday; roll to next weekly if `DTE < min_dte` (dodge the expiry-day theta/gamma cliff).
 3. **Strike** — pick by target delta band (≈0.35–0.50 for a directional buy), map `dir`→CE/PE, filter by liquidity (min OI/volume, max bid-ask spread).
 4. **IV-aware entry check** — reject IV-rich strikes (IV percentile) and illiquid strikes; entry premium = ask/mid.
@@ -202,14 +250,13 @@ Build and validate `intraday` first. Positional is then a new config plus a few 
 
 ---
 
-## Next priorities (after the gate)
+## Next priorities
 
-1. **Black-76 IV migration** — replace the Black-Scholes + Newton-Raphson solver with Black-76 via `py_vollib` (correct for European, forward-priced index options; `py_vollib` provides the IV solver too, so the Newton-Raphson loop can go). Verify against the old solver on a sample chain. *(No secrets, no execution.)*
-2. **GEX regime signal** — per-strike GEX, net GEX, gamma flip; expose the **net-GEX sign** as a `RegimeProvider` that replaces the ADX proxy in the gate above. Convention: dealers long call gamma, short put gamma. *(No secrets, no execution.)*
-3. **OpenAlgo API client** — thin client over OpenAlgo's HTTP endpoints (option chain, Greeks, quotes). **API only** — see licensing rule.
-4. **GEX analytics modules** — adapt MIT-licensed GEX/Greeks code (walls, profiles) into the backend.
-5. **XGBoost meta-labeling** — gather-label -> train -> deploy over the SQLite journal (time-ordered splits, purged walk-forward, calibration). Becomes the quality arbiter for the trending-regime path of the gate.
-6. **Agentic layer (optional)** — briefing / journaling / review / Q&A as a tool-use loop around the deterministic core. Reads and writes notes only; never executes.
+1. **Consolidate the data layer onto OpenAlgo** — the active task above. Highest priority: it fixes real correctness bugs (expiry, lot size) and unifies the two chain sources.
+2. **Reconcile the duplicate exit systems and setup finders** — converge `exit_manager.py` / `exit_monitor.py`, and `scanner._find_setups` / `strike_selector`, onto one path fed by the OpenAlgo chain.
+3. **XGBoost meta-labeling** — gather-label → train → deploy over the SQLite journal (time-ordered splits, purged walk-forward, calibration). The quality arbiter for the trending-regime path of the gate. Needs ~30–50 logged trades first.
+4. **Agentic layer (optional)** — briefing / journaling / review / Q&A as a tool-use loop around the deterministic core; reads/writes notes only, never executes. Can use the MIT-licensed `openalgo-mcp` for live data and account reads.
+5. **(Later) Human-approved execution via OpenAlgo** — route approved suggestions through `optionsorder` / `placesmartorder`, validated first in OpenAlgo's **Analyzer / sandbox** mode. Still human-in-the-loop; never autonomous.
 
 ## Domain notes (so changes stay correct)
 
@@ -219,3 +266,4 @@ Build and validate `intraday` first. Positional is then a new config plus a few 
 - **Net GEX sign = regime:** positive -> dealers suppress moves (pinning, mean-reversion); negative -> dealers amplify (trending, vol expansion). This is the principled replacement for the ADX regime proxy.
 - The mean-reversion z-gate is **correct in ranging regimes and wrong in trending ones** — that asymmetry is the entire reason for the regime router.
 - The SQLite journal/`signals` table is the **training data** for the meta-label — keep its schema clean and every signal (taken or skipped) fully recorded with features.
+- **SENSEX is intentionally excluded — do not re-add it.** The system trades **NIFTY and BankNifty only**. SENSEX was dropped on purpose (TradingView's 15-minute data delay on it, plus high correlation to NIFTY), so `settings.INDICES` is deliberately NSE-only and the scanner is 2-panel. A stale `SENSEX` panel was already removed from `frontend/index.html` once. If SENSEX is ever wanted back, the **only** correct change is adding it to `settings.INDICES` (which drives both the scan loop and the UI panels) — never by hand-adding a panel to the frontend.
