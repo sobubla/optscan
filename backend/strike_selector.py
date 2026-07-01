@@ -73,8 +73,9 @@ def next_weekly_expiry(today: date, min_dte: int = 2) -> str:
     """
     Return the nearest weekly expiry (Thursday) with DTE >= min_dte.
 
-    Indian NSE weekly options expire on Thursday. If today is Thursday and
-    DTE=0 < min_dte, rolls to next Thursday.
+    DEPRECATED — hardcodes Thursday, which is wrong for NIFTY (now Tuesday).
+    No longer called from server.py. Kept only because test_strike.py tests it
+    directly as a pure-math helper. Do NOT use on any trade-affecting path.
 
     Returns the expiry in OpenAlgo format: "%d-%b-%Y", e.g. "01-Feb-2024".
     """
@@ -265,8 +266,8 @@ def evaluate(
     Turn a gate take into an EntrySuggestion, or return None if nothing passes filters.
 
     chain must already be for the correct expiry (server.py fetches it via
-    next_weekly_expiry() before calling evaluate). The expiry is read from
-    chain row fields, not recomputed here.
+    _pick_expiry() → OpenAlgo get_expiry(), never a weekday heuristic). The
+    expiry is read from chain row fields, not recomputed here.
 
     mode="positional" raises NotImplementedError — not yet enabled.
     """

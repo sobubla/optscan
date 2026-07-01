@@ -1,16 +1,18 @@
 """
 Tests for expiry hardening — refuse-to-trade when real expiry is unavailable.
 
-Expected failures against CURRENT code:
-  Tests 3-7: _pick_expiry() falls back to a Thursday heuristic on any failure;
-    these tests assert (None, True) instead of the heuristic string.
-  Tests 8-9: the entry path ignores from_heuristic with `_` and proceeds to
-    strptime(None, ...) inside a try/except; suggestion stays None but
-    blocked_reason is None (not "expiry_unavailable"), so the blocked_reason
-    assertion fails. get_enriched_chain and strike_selector.evaluate ALSO
-    must not be called — currently they are skipped only because strptime
-    raises first, but that is an implementation accident, not the guarantee.
-  Test 10 (happy path): expected to pass on current code.
+All 10 tests pass after the expiry hardening fix (server.py commit that:
+  - makes _pick_expiry() return (None, True) instead of a Thursday heuristic
+  - gates the OA chain fetch and entry suggestion on expiry_heuristic=False
+  - sets blocked_reason="expiry_unavailable" unconditionally before strptime)
+
+Tests 1-2, 10: happy-path tests that passed before and after the fix.
+Tests 3-7: _pick_expiry() failure cases — confirm (None, True) on every failure
+  mode (OA not configured, API error, empty list, bad format, all-past dates).
+Tests 8-9: entry-path guarantee — blocked_reason=="expiry_unavailable",
+  suggestion==None, get_enriched_chain and evaluate never called.
+  Test 9 specifically verifies the skip is unconditional even before the first
+  scan cycle (latest_scans empty for the index).
 """
 
 import asyncio
@@ -102,10 +104,7 @@ def test_pick_expiry_tuesday_date_parses():
 
 
 def test_pick_expiry_no_oa_returns_none():
-    """_openalgo = None → must return (None, True), not fall back to Thursday.
-
-    FAILS on current code: code returns (thursday_str, True).
-    """
+    """_openalgo = None → returns (None, True), not a Thursday fallback."""
     with patch.object(server, "_openalgo", None):
         expiry, heuristic = _pick_expiry("NIFTY", min_dte=0)
     assert expiry is None
@@ -113,10 +112,7 @@ def test_pick_expiry_no_oa_returns_none():
 
 
 def test_pick_expiry_get_expiry_raises_returns_none():
-    """get_expiry() raises a network/API exception → must return (None, True).
-
-    FAILS on current code: exception caught, falls to Thursday.
-    """
+    """get_expiry() raises a network/API exception → returns (None, True)."""
     oa = MagicMock()
     oa.get_expiry.side_effect = Exception("connection refused")
     with patch.object(server, "_openalgo", oa):
@@ -126,10 +122,7 @@ def test_pick_expiry_get_expiry_raises_returns_none():
 
 
 def test_pick_expiry_empty_list_returns_none():
-    """get_expiry() returns [] — no expiries published → must return (None, True).
-
-    FAILS on current code: loop exhausts, falls to Thursday.
-    """
+    """get_expiry() returns [] — no expiries published → returns (None, True)."""
     with patch.object(server, "_openalgo", _oa([])):
         expiry, heuristic = _pick_expiry("NIFTY", min_dte=0)
     assert expiry is None
@@ -137,10 +130,7 @@ def test_pick_expiry_empty_list_returns_none():
 
 
 def test_pick_expiry_bad_format_returns_none():
-    """get_expiry() returns an unparseable string → strptime raises, must return (None, True).
-
-    FAILS on current code: exception caught in strptime loop, falls to Thursday.
-    """
+    """get_expiry() returns an unparseable string → strptime raises, returns (None, True)."""
     with patch.object(server, "_openalgo", _oa(["BADFORMAT"])):
         expiry, heuristic = _pick_expiry("NIFTY", min_dte=0)
     assert expiry is None
@@ -148,12 +138,7 @@ def test_pick_expiry_bad_format_returns_none():
 
 
 def test_pick_expiry_all_dates_below_min_dte_returns_none():
-    """All OA dates have DTE < min_dte (yesterday → DTE = -1 < min_dte=2).
-
-    The loop exhausts without finding a qualifying date.
-    Must return (None, True).
-    FAILS on current code: loop exhausts, falls to Thursday.
-    """
+    """All OA dates have DTE < min_dte (yesterday → DTE=-1 < min_dte=2) → (None, True)."""
     past = _ddmmmyy(-1)   # yesterday — always DTE < 0 < min_dte=2
     with patch.object(server, "_openalgo", _oa([past])):
         expiry, heuristic = _pick_expiry("NIFTY", min_dte=2)
@@ -227,17 +212,13 @@ _TAKE_PAYLOAD = {
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_entry_skips_when_expiry_unavailable(entry_client):
-    """When _pick_expiry returns (None, True), the entry path must SKIP completely.
+    """When _pick_expiry returns (None, True), the entry path skips completely.
 
     Asserts ALL of:
       - response.suggestion is null (no suggestion produced)
       - response.blocked_reason == "expiry_unavailable" (cause clearly identified)
-      - _openalgo.get_enriched_chain was NOT called (guessed expiry must not reach OA API)
+      - _openalgo.get_enriched_chain was NOT called (no fabricated expiry reaches OA API)
       - strike_selector.evaluate was NOT called (no strike picked off a fabricated expiry)
-
-    FAILS on current code: the entry path discards from_heuristic with `_`,
-    proceeds to strptime(None, ...) which raises TypeError, caught by the generic
-    except block; blocked_reason stays None instead of "expiry_unavailable".
     """
     oa = MagicMock()    # non-None so elif _openalgo: branch is entered
     ss = MagicMock()
@@ -263,15 +244,12 @@ def test_entry_skips_when_expiry_unavailable(entry_client):
 
 
 def test_entry_skips_unconditionally_without_prior_scan(entry_client):
-    """Refuse-to-trade must NOT depend on latest_scans being populated.
+    """Refuse-to-trade is unconditional — does not depend on latest_scans being populated.
 
     Simulates a webhook arriving before the first scan cycle has run:
     latest_scans is empty (no entry for 'NIFTY'). The skip must still happen —
-    the trade-safety guarantee is unconditional. The dashboard health annotation
-    (updating latest_scans) is best-effort and may lag; the skip must not lag.
-
-    FAILS on current code: same root cause as test_entry_skips_when_expiry_unavailable
-    — blocked_reason is None, not "expiry_unavailable".
+    the dashboard health annotation (updating latest_scans) is best-effort and may
+    lag; the skip itself must not lag.
     """
     # Simulate cold start: no prior scan cycle has populated latest_scans
     original_scans = dict(server.latest_scans)

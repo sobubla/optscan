@@ -99,12 +99,14 @@ _last_iv_record_date: Dict[str, str] = {}
 _logged_signal_keys = set()
 
 
-def _pick_expiry(sym: str, min_dte: int) -> tuple[str, bool]:
+def _pick_expiry(sym: str, min_dte: int) -> tuple[Optional[str], bool]:
     """Return (expiry_str '%d-%b-%Y', used_heuristic).
 
     used_heuristic=False when OpenAlgo returned a real dated list.
-    used_heuristic=True when OpenAlgo failed/unavailable and the Thursday
-    heuristic was used instead — caller should mark health as degraded.
+    used_heuristic=True — and expiry is None — when OpenAlgo is unconfigured,
+    get_expiry raises, returns an empty list, any date fails to parse, or all
+    dates have DTE < min_dte.  Callers on trade-affecting paths must SKIP (not
+    guess a weekday) when this flag is True.
     """
     if _openalgo:
         try:
@@ -115,7 +117,7 @@ def _pick_expiry(sym: str, min_dte: int) -> tuple[str, bool]:
                     return expiry_date.strftime("%d-%b-%Y"), False
         except Exception as exc:
             logger.warning("OpenAlgo get_expiry failed for %s: %s", sym, exc)
-    return strike_selector.next_weekly_expiry(date.today(), min_dte=min_dte), True
+    return None, True
 
 
 def _find_ltp(chain: list, strike: int, option_type: str) -> Optional[float]:
@@ -222,23 +224,26 @@ async def scan_loop():
                         front_expiry, expiry_heuristic = _pick_expiry(idx, min_dte=0)
                         if expiry_heuristic:
                             _degrade("Expiry from heuristic — OpenAlgo expiry unavailable")
-                        try:
-                            oa_expiry_ddmmmyy = datetime.strptime(
-                                front_expiry, "%d-%b-%Y"
-                            ).strftime("%d%b%y").upper()
-                            oa_chain_data = _openalgo.get_enriched_chain(
-                                idx, "NSE_INDEX", oa_expiry_ddmmmyy,
-                                strike_count=settings.STRIKES_AROUND_ATM,
-                            )
-                            if not oa_chain_data.get("strikes"):
-                                _degrade("OpenAlgo chain returned no strikes")
+                            # front_expiry is None; skip OA chain fetch entirely.
+                            # Fyers fallback and scan_index empty-chain guard handle display.
+                        else:
+                            try:
+                                oa_expiry_ddmmmyy = datetime.strptime(
+                                    front_expiry, "%d-%b-%Y"
+                                ).strftime("%d%b%y").upper()
+                                oa_chain_data = _openalgo.get_enriched_chain(
+                                    idx, "NSE_INDEX", oa_expiry_ddmmmyy,
+                                    strike_count=settings.STRIKES_AROUND_ATM,
+                                )
+                                if not oa_chain_data.get("strikes"):
+                                    _degrade("OpenAlgo chain returned no strikes")
+                                    oa_chain_data = None
+                            except Exception:
+                                logger.warning(
+                                    "OpenAlgo chain fetch failed for %s — Fyers fallback", idx
+                                )
+                                _degrade("OpenAlgo chain unavailable — Fyers fallback active")
                                 oa_chain_data = None
-                        except Exception:
-                            logger.warning(
-                                "OpenAlgo chain fetch failed for %s — Fyers fallback", idx
-                            )
-                            _degrade("OpenAlgo chain unavailable — Fyers fallback active")
-                            oa_chain_data = None
 
                     result = scanner.scan_index(idx, oa_chain_data=oa_chain_data)
 
@@ -479,39 +484,56 @@ async def optscan_webhook(payload: OptScanPayload):
 
         elif _openalgo:
             # No conflict and OpenAlgo is configured → generate entry suggestion.
-            try:
-                from dataclasses import asdict
-                expiry, _ = _pick_expiry(payload.sym, min_dte=settings.ENTRY_MIN_DTE)
-                expiry_ddmmmyy = datetime.strptime(expiry, "%d-%b-%Y").strftime("%d%b%y").upper()
-                chain_data = _openalgo.get_enriched_chain(
-                    payload.sym, "NSE_INDEX", expiry_ddmmmyy, strike_count=20
+            # Expiry check is done BEFORE strptime so None never reaches it.
+            expiry, expiry_heuristic = _pick_expiry(payload.sym, min_dte=settings.ENTRY_MIN_DTE)
+            if expiry_heuristic:
+                blocked_reason = "expiry_unavailable"
+                logger.warning(
+                    "ENTRY SKIP — %s: real expiry unavailable from OpenAlgo", payload.sym
                 )
-                chain = chain_data["strikes"]
-                spot = chain_data.get("underlying_ltp") or payload.price
-                iv_hist = fyers._iv_history.get(payload.sym.upper(), [])
-                suggestion = strike_selector.evaluate(
-                    sym=payload.sym,
-                    direction=payload.dir,
-                    regime=decision.regime,
-                    spot=spot,
-                    atr=payload.atr,
-                    chain=chain,
-                    iv_history=iv_hist,
-                    mode=settings.ENTRY_MODE,
-                    config=settings,
-                )
-                if suggestion:
-                    suggestion_data = asdict(suggestion)
-                    log_entry_suggestion(suggestion_data, optscan_id=optscan_id)
-                    logger.info(
-                        "SUGGESTION — %s %s%s @%.1f lots=%d [%s]",
-                        suggestion.sym, suggestion.strike, suggestion.option_type,
-                        suggestion.entry_premium, suggestion.lots, suggestion.rationale,
+                # Best-effort: surface the degraded state on the dashboard without
+                # waiting for the next scan cycle. Only applied when current health
+                # is "ok" so we don't overwrite a more specific scan-loop reason.
+                if payload.sym.upper() in latest_scans:
+                    if latest_scans[payload.sym.upper()].get("health", {}).get("state") == "ok":
+                        latest_scans[payload.sym.upper()]["health"] = {
+                            "state": "degraded",
+                            "reason": "expiry unavailable — entry skipped",
+                            "ts": datetime.now().isoformat(),
+                        }
+            else:
+                try:
+                    from dataclasses import asdict
+                    expiry_ddmmmyy = datetime.strptime(expiry, "%d-%b-%Y").strftime("%d%b%y").upper()
+                    chain_data = _openalgo.get_enriched_chain(
+                        payload.sym, "NSE_INDEX", expiry_ddmmmyy, strike_count=20
                     )
-            except Exception:
-                logger.exception(
-                    "Strike selector error — gate take recorded, selector skipped"
-                )
+                    chain = chain_data["strikes"]
+                    spot = chain_data.get("underlying_ltp") or payload.price
+                    iv_hist = fyers._iv_history.get(payload.sym.upper(), [])
+                    suggestion = strike_selector.evaluate(
+                        sym=payload.sym,
+                        direction=payload.dir,
+                        regime=decision.regime,
+                        spot=spot,
+                        atr=payload.atr,
+                        chain=chain,
+                        iv_history=iv_hist,
+                        mode=settings.ENTRY_MODE,
+                        config=settings,
+                    )
+                    if suggestion:
+                        suggestion_data = asdict(suggestion)
+                        log_entry_suggestion(suggestion_data, optscan_id=optscan_id)
+                        logger.info(
+                            "SUGGESTION — %s %s%s @%.1f lots=%d [%s]",
+                            suggestion.sym, suggestion.strike, suggestion.option_type,
+                            suggestion.entry_premium, suggestion.lots, suggestion.rationale,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Strike selector error — gate take recorded, selector skipped"
+                    )
 
     return {
         "take": decision.take,
