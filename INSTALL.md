@@ -113,12 +113,19 @@ You will paste the exact same value into TradingView's alert message later (step
 
 OpenAlgo is needed for the options strike selector (entry suggestions) and the exit monitor. The scanner dashboard and trade journal work without it.
 
-If you have OpenAlgo running, create a `.env` file at the project root:
+If you have OpenAlgo running, copy the included example file and fill in your values:
+
+```bash
+cp .env.example .env   # macOS / Linux
+# On Windows: Copy-Item .env.example .env
+```
+
+Then edit `.env`:
 
 ```bash
 # .env  — never commit this file
 OPENALGO_BASE_URL=http://127.0.0.1:8080
-OPENALGO_API_KEY=your_openalgo_api_key
+OPENALGO_API_KEY=your_openalgo_api_key_here
 ```
 
 Then load it into the shell before starting the server:
@@ -332,6 +339,7 @@ options_scanner/
 ├── INSTALL.md              # this file
 ├── README.md               # project overview
 ├── requirements.txt        # dependencies (floor-pinned with >=)
+├── .env.example            # template — copy to .env and fill in real values
 ├── generate_token.py       # daily Fyers auth-code → access-token flow
 ├── config/
 │   └── settings.py         # all thresholds and credentials (not committed with real values)
@@ -375,7 +383,7 @@ options_scanner/
 ## Security checklist before going live
 
 - [ ] `config/settings.py` is in `.gitignore` (it holds live credentials).
-- [ ] `.env` is in `.gitignore`.
+- [ ] `.env` is in `.gitignore` (`.env.example` is safe to commit — it has no real values).
 - [ ] `data/journal.db` is in `.gitignore` (contains trade history).
 - [ ] `WEBHOOK_SECRET` is a unique random string, not a dictionary word.
 - [ ] No credentials printed to console or written to `logs/`.
