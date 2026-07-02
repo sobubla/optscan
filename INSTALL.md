@@ -124,7 +124,13 @@ OPENALGO_API_KEY=your_openalgo_api_key
 Then load it into the shell before starting the server:
 
 ```bash
-export $(grep -v '^#' .env | xargs)
+export $(grep -v '^#' .env | xargs)   # macOS / Linux (bash)
+```
+
+On **Windows** (PowerShell), set the variables manually instead:
+```powershell
+$env:OPENALGO_BASE_URL = "http://127.0.0.1:8080"
+$env:OPENALGO_API_KEY  = "your_openalgo_api_key"
 ```
 
 Or add these two lines near the top of `config/settings.py` to load the file automatically (one-time edit):
@@ -175,7 +181,7 @@ mkdir -p logs
 venv/bin/pytest tests/ -v
 ```
 
-All 57 tests should pass. If any fail, check that your virtual environment is active and all packages installed correctly.
+All 99 tests should pass. If any fail, check that your virtual environment is active and all packages installed correctly.
 
 ---
 
@@ -247,7 +253,8 @@ source venv/bin/activate
 # 2. Generate a fresh Fyers token (takes ~30 seconds)
 python generate_token.py
 
-# 3. Load OpenAlgo credentials (if using OpenAlgo)
+# 3. Load OpenAlgo credentials (if using OpenAlgo) — bash/macOS/Linux only
+# On Windows PowerShell: $env:OPENALGO_BASE_URL="..."; $env:OPENALGO_API_KEY="..."
 export $(grep -v '^#' .env | xargs)
 
 # 4. Start the server
@@ -290,10 +297,18 @@ The journal tracks P&L in rupees (`quantity × lot_size × (exit − entry)`), h
 
 - The Pine Script payload format does not match the expected schema. Check `logs/scanner.log` for the validation detail. The required fields are documented in `CLAUDE.md → Webhook contract`.
 
+**Dashboard shows DEGRADED / "entries paused"**
+
+- The scanner panel header turns amber and shows an "entries paused" reason when a data-quality problem is detected. Common causes:
+  - **Expiry unavailable** — OpenAlgo could not return a real expiry date for that index. No entry suggestion will be produced (by design — the system refuses to trade on a guessed expiry). Check that OpenAlgo is running and reachable.
+  - **Chain empty** — OpenAlgo returned no strikes for the expiry. May be a pre-market or holiday condition.
+  - **OpenAlgo unavailable** — `OPENALGO_BASE_URL` is set but the server is unreachable. The scanner falls back to Fyers for display but entry suggestions are blocked.
+  - **IV history cold** — fewer than 20 IV samples recorded; strike selector will reject every entry until history builds up (first ~20 scan cycles).
+
 **Strike selector never fires / no entry suggestions**
 
 - `OPENALGO_BASE_URL` and `OPENALGO_API_KEY` are not set, or not loaded into the environment before the server starts. See step 7.
-- Check `logs/scanner.log` for `Strike selector error`.
+- Check `logs/scanner.log` for `ENTRY SKIP` or `Strike selector error`.
 
 **ngrok tunnel disconnects**
 
@@ -316,7 +331,7 @@ options_scanner/
 ├── CLAUDE.md               # design specs and hard rules for agentic development
 ├── INSTALL.md              # this file
 ├── README.md               # project overview
-├── requirements.txt        # pinned dependencies
+├── requirements.txt        # dependencies (floor-pinned with >=)
 ├── generate_token.py       # daily Fyers auth-code → access-token flow
 ├── config/
 │   └── settings.py         # all thresholds and credentials (not committed with real values)
@@ -343,6 +358,9 @@ options_scanner/
 │   ├── test_gex.py
 │   ├── test_iv_greeks.py
 │   ├── test_openalgo_client.py
+│   ├── test_position_guard.py
+│   ├── test_scanner.py
+│   ├── test_server_expiry.py
 │   ├── test_strike.py
 │   └── test_exit_monitor.py
 ├── data/
